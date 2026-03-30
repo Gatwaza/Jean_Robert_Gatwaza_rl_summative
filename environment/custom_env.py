@@ -290,8 +290,9 @@ class CPREnv(gym.Env):
 
     def _is_terminal(self) -> bool:
         p = self._patient
-        # Success: ROSC (return of spontaneous circulation)
-        if p.heart_rate >= 0.9 and p.consciousness_level >= 0.7:
+        # Success: ROSC — heart rate restored is sufficient.
+        # consciousness_level is a bonus, not a requirement.
+        if p.heart_rate >= 0.9:
             return True
         # Failure: prolonged inaction
         if p.time_without_action > 15:
@@ -300,22 +301,19 @@ class CPREnv(gym.Env):
 
     def _compute_reward(self, action: int) -> float:
         """
-        Reward function v2 — all exploits closed.
+        Reward function v3 — all exploits closed + CPR after ROSC penalty.
 
-        Key fixes vs v1:
-          - CALL_EMERGENCY now penalised when out of sequence (was +0.5 always)
-          - OPEN_AIRWAY now penalised when out of sequence (was 0 always)
-          - TILT_HEAD_BACK penalised when out of sequence
-          - CHECK_BREATHING penalised out of sequence (was +0.3 always)
-          - MONITOR_PULSE penalised stage < 2 (was only -0.3 stage < 3)
-          - Step-level time penalty added to prevent stalling
-          - ROSC terminal bonus increased to strongly reward protocol completion
-          - Repeating any already-completed action is penalised
+        Key fixes vs v2:
+          - CPR actions heavily penalised after ROSC to prevent compression spam
         """
         p = self._patient
         r = 0.0
         stage = self._protocol_stage
         scale = self._diff_scale
+        
+        # Penalize CPR actions after ROSC achieved (patient revived)
+        if p.heart_rate >= 0.9 and action in [4, 5]:  # COMPRESS, DELIVER_RESCUE_BREATHS
+            return -2.0  # Strong penalty: patient already revived, stop CPR
 
         # ── Per-step living penalty — discourages stalling/looping ───────────
         # Grows linearly with steps so early exploration is tolerated but
@@ -417,9 +415,12 @@ class CPREnv(gym.Env):
                 r = -1.0  # out of order
 
         elif action == 6:  # DEFIBRILLATE
-            if stage >= 4 and p.compressions_delivered >= 30:
+            if p.heart_rate >= 0.85:
+                r = -1.0   # HR already high — defibrillation dangerous/pointless
+            elif stage >= 4 and p.compressions_delivered >= 30:
                 p.heart_rate = min(1.0, p.heart_rate + 0.3 * scale)
                 r = 4.0 * scale
+                already_done.add(6)
             else:
                 r = -2.0  # defibrillating without compressions
 

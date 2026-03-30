@@ -149,24 +149,24 @@ DQN_EXPERIMENTS = [
         learning_starts=500, train_freq=4, target_update_interval=250,
         net_arch=[64, 64], total_timesteps=500_000,
     ),
-    # Exp 8 — Batch 16
-    dict(
-        learning_rate=1e-2, gamma=0.95, batch_size=16, buffer_size=20_000,
-        exploration_fraction=0.15, exploration_final_eps=0.05,
-        learning_starts=500, train_freq=4, target_update_interval=250,
-        net_arch=[64, 64], total_timesteps=500_000,
-    ),
-    # Exp 9 — Batch 64
-    dict(
-        learning_rate=1e-2, gamma=0.95, batch_size=64, buffer_size=20_000,
-        exploration_fraction=0.15, exploration_final_eps=0.05,
-        learning_starts=500, train_freq=4, target_update_interval=250,
-        net_arch=[64, 64], total_timesteps=500_000,
-    ),
-    # Exp 10 — Slightly lower exploration_final_eps for exploitation
+    # Exp 8 — Higher exploration: fraction 0.3, final_eps 0.1
     dict(
         learning_rate=1e-2, gamma=0.95, batch_size=32, buffer_size=20_000,
-        exploration_fraction=0.15, exploration_final_eps=0.02,
+        exploration_fraction=0.3, exploration_final_eps=0.1,
+        learning_starts=500, train_freq=4, target_update_interval=250,
+        net_arch=[64, 64], total_timesteps=500_000,
+    ),
+    # Exp 9 — Higher exploration: fraction 0.4, final_eps 0.1
+    dict(
+        learning_rate=1e-2, gamma=0.95, batch_size=32, buffer_size=20_000,
+        exploration_fraction=0.4, exploration_final_eps=0.1,
+        learning_starts=500, train_freq=4, target_update_interval=250,
+        net_arch=[64, 64], total_timesteps=500_000,
+    ),
+    # Exp 10 — Highest exploration: fraction 0.5, final_eps 0.15
+    dict(
+        learning_rate=1e-2, gamma=0.95, batch_size=32, buffer_size=20_000,
+        exploration_fraction=0.5, exploration_final_eps=0.15,
         learning_starts=500, train_freq=4, target_update_interval=250,
         net_arch=[64, 64], total_timesteps=500_000,
     ),

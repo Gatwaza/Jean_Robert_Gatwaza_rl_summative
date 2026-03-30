@@ -93,45 +93,45 @@ def _atomic_save(path, data):
 # PPO Hyperparameter Grid (10 experiments) — focused around strong prior DQN signal
 # ---------------------------------------------------------------------------
 PPO_EXPERIMENTS = [
-    # Exp 1 — Base candidate (LR=1e-3, gamma=0.95, strong exploitation)
+    # Exp 1 — Base candidate (LR=1e-3, gamma=0.95, strong exploration)
     dict(learning_rate=1e-3, gamma=0.95, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.001, clip_range=0.2,
+         batch_size=64, n_epochs=10, ent_coef=0.2, clip_range=0.2,
          max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
-    # Exp 2 — Lower LR
+    # Exp 2 — Lower LR, high entropy
     dict(learning_rate=5e-4, gamma=0.95, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.001, clip_range=0.2,
+         batch_size=64, n_epochs=10, ent_coef=0.2, clip_range=0.2,
          max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
-    # Exp 3 — Higher LR
+    # Exp 3 — Higher LR, high entropy
     dict(learning_rate=2e-3, gamma=0.95, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.001, clip_range=0.2,
+         batch_size=64, n_epochs=10, ent_coef=0.2, clip_range=0.2,
          max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
-    # Exp 4 — Lower gamma
+    # Exp 4 — Lower gamma, moderate entropy
     dict(learning_rate=1e-3, gamma=0.90, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.001, clip_range=0.2,
+         batch_size=64, n_epochs=10, ent_coef=0.2, clip_range=0.2,
          max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
-    # Exp 5 — Higher gamma
+    # Exp 5 — Higher gamma, high entropy
     dict(learning_rate=1e-3, gamma=0.99, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.001, clip_range=0.2,
+         batch_size=64, n_epochs=10, ent_coef=0.2, clip_range=0.2,
          max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
-    # Exp 6 — Lower entropy
+    # Exp 6 — Medium entropy
     dict(learning_rate=1e-3, gamma=0.95, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.0001, clip_range=0.2,
+         batch_size=64, n_epochs=10, ent_coef=0.2, clip_range=0.2,
          max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
-    # Exp 7 — Higher entropy
+    # Exp 7 — High entropy exploration
     dict(learning_rate=1e-3, gamma=0.95, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.01, clip_range=0.2,
+         batch_size=64, n_epochs=10, ent_coef=0.25, clip_range=0.2,
          max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
-    # Exp 8 — Smaller batch
+    # Exp 8 — Smaller batch, high entropy
     dict(learning_rate=1e-3, gamma=0.95, gae_lambda=0.95, n_steps=2048,
-         batch_size=32, n_epochs=10, ent_coef=0.001, clip_range=0.2,
+         batch_size=32, n_epochs=10, ent_coef=0.2, clip_range=0.2,
          max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
-    # Exp 9 — Larger batch
+    # Exp 9 — Larger batch, high entropy
     dict(learning_rate=1e-3, gamma=0.95, gae_lambda=0.95, n_steps=2048,
-         batch_size=128, n_epochs=10, ent_coef=0.001, clip_range=0.2,
+         batch_size=128, n_epochs=10, ent_coef=0.2, clip_range=0.2,
          max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
-    # Exp 10 — Alternative clip range
+    # Exp 10 — Alternative clip range, high entropy
     dict(learning_rate=1e-3, gamma=0.95, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.001, clip_range=0.1,
+         batch_size=64, n_epochs=10, ent_coef=0.2, clip_range=0.1,
          max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
 ]
 

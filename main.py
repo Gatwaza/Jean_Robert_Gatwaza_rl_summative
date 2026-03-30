@@ -100,6 +100,7 @@ def run_random_agent(bridge, episodes, use_mediapipe, video_path=None):
             lm = next(lm_gen)
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated; ep_reward += reward; step += 1
+            ep_action_counts[action] = ep_action_counts.get(action, 0) + 1
             bridge.send_state(build_state_packet(
                 "random", "RANDOM", ep, step, action, ACTION_NAMES[action],
                 reward, ep_reward, lm, env._patient, info["protocol_stage"]))
@@ -123,25 +124,20 @@ def run_demo(bridge, algo, episodes, use_mediapipe, video_path=None):
     for ep in range(1, episodes + 1):
         obs, info = env.reset()
         done = False; ep_reward = 0.0; step = 0
+        ep_action_counts = {}
         print(f"\n{SEP}\n  DEMO EPISODE {ep}/{episodes}  [{algo.upper()}]\n{SEP}")
-        action_counts: dict[str, int] = {}
         while not done:
             if model_type == "sb3":
-                # FIX (bug 2): deterministic=True locks the policy to its argmax
-                # action permanently when it has collapsed — hiding the problem.
-                # Use stochastic sampling in demo so collapse becomes immediately
-                # visible in the action distribution printed at episode end.
-                action, _ = model.predict(obs, deterministic=False)
-                action = int(action)
+                action, _ = model.predict(obs, deterministic=True); action = int(action)
             else:
                 import torch
                 with torch.no_grad():
                     dist = model(torch.FloatTensor(obs).unsqueeze(0))
                     action = dist.sample().item()
-            action_counts[ACTION_NAMES[action]] = action_counts.get(ACTION_NAMES[action], 0) + 1
             lm = next(lm_gen)
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated; ep_reward += reward; step += 1
+            ep_action_counts[action] = ep_action_counts.get(action, 0) + 1
             bridge.send_state(build_state_packet(
                 "demo", algo.upper(), ep, step, action, ACTION_NAMES[action],
                 reward, ep_reward, lm, env._patient, info["protocol_stage"], exp_num))
@@ -155,19 +151,21 @@ def run_demo(bridge, algo, episodes, use_mediapipe, video_path=None):
         all_rewards.append(ep_reward)
         rosc = info["heart_rate"] >= 0.9
         bridge.send_state(build_episode_end_packet(ep, ep_reward, step, rosc, algo.upper()))
-        print(f"\n  {'★ ROSC — PATIENT REVIVED' if rosc else 'Episode ended'}  |  "
-              f"Reward: {ep_reward:.2f}  |  Steps: {step}")
-        # FIX (bug 2 cont.): surface action collapse explicitly.
-        # If one action dominates >80% of steps the policy has collapsed and the
-        # model needs to be retrained with higher ent_coef.
-        top_action, top_count = max(action_counts.items(), key=lambda x: x[1])
-        collapse_pct = top_count / max(step, 1) * 100
-        if collapse_pct > 80:
-            print(f"  ⚠  Action collapse: '{top_action}' = {top_count}/{step} steps "
-                  f"({collapse_pct:.0f}%). Policy likely undertrained — raise ent_coef.")
-        else:
-            top4 = sorted(action_counts.items(), key=lambda x: -x[1])[:4]
-            print("  Action mix: " + " | ".join(f"{a}: {c}" for a, c in top4))
+        outcome = "★ ROSC — PATIENT REVIVED" if rosc else "Episode ended"
+        print(f"\n  {outcome}  |  Reward: {ep_reward:.2f}  |  Steps: {step}")
+
+        # ── Action collapse detector ───────────────────────────────────────
+        if ep_action_counts:
+            top_action = max(ep_action_counts, key=ep_action_counts.get)
+            top_pct    = ep_action_counts[top_action] / step * 100
+            if top_pct > 60:
+                print(f"  ⚠  Action collapse: '{ACTION_NAMES[top_action]}' = "
+                      f"{ep_action_counts[top_action]}/{step} steps ({top_pct:.0f}%). "
+                      f"Policy likely undertrained — raise ent_coef or retrain.")
+            else:
+                top5 = sorted(ep_action_counts.items(), key=lambda x: -x[1])[:5]
+                mix  = " | ".join(f"{ACTION_NAMES[a]}: {n}" for a, n in top5)
+                print(f"  Action mix: {mix}")
         time.sleep(1.5)
 
     env.close()
