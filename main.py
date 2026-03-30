@@ -54,9 +54,9 @@ def load_best_model(algo):
     valid = [r for r in results if "error" not in r]
     if not valid:
         raise ValueError(f"No successful {algo} experiments.")
-    best = max(valid, key=lambda r: r.get("mean_reward_last50", -999))
+    best = max(valid, key=lambda r: r.get("max_reward", -999))
     exp_num = best["exp"]
-    log.info(f"Best {algo.upper()} → Experiment {exp_num} (mean={best['mean_reward_last50']:.2f})")
+    log.info(f"Best {algo.upper()} → Experiment {exp_num} (max={best['max_reward']:.2f})")
 
     if algo == "dqn":
         from stable_baselines3 import DQN
@@ -94,6 +94,12 @@ def run_random_agent(bridge, episodes, use_mediapipe, video_path=None):
     for ep in range(1, episodes + 1):
         obs, info = env.reset()
         done = False; ep_reward = 0.0; step = 0
+        # ── FIX 5 ──────────────────────────────────────────────────────────
+        # ep_action_counts was used but never initialised in this function,
+        # causing a NameError on the first step of every random episode.
+        # (The dict IS initialised in run_demo but was missing here.)
+        ep_action_counts = {}
+        # ── END FIX 5 ──────────────────────────────────────────────────────
         print(f"\n{SEP}\n  RANDOM EPISODE {ep}/{episodes}\n{SEP}")
         while not done:
             action = env.action_space.sample()
@@ -128,7 +134,7 @@ def run_demo(bridge, algo, episodes, use_mediapipe, video_path=None):
         print(f"\n{SEP}\n  DEMO EPISODE {ep}/{episodes}  [{algo.upper()}]\n{SEP}")
         while not done:
             if model_type == "sb3":
-                action, _ = model.predict(obs, deterministic=True); action = int(action)
+                action, _ = model.predict(obs, deterministic=False); action = int(action)
             else:
                 import torch
                 with torch.no_grad():
@@ -154,7 +160,6 @@ def run_demo(bridge, algo, episodes, use_mediapipe, video_path=None):
         outcome = "★ ROSC — PATIENT REVIVED" if rosc else "Episode ended"
         print(f"\n  {outcome}  |  Reward: {ep_reward:.2f}  |  Steps: {step}")
 
-        # ── Action collapse detector ───────────────────────────────────────
         if ep_action_counts:
             top_action = max(ep_action_counts, key=ep_action_counts.get)
             top_pct    = ep_action_counts[top_action] / step * 100

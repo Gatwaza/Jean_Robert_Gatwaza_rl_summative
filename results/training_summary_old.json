@@ -1,24 +1,40 @@
 {
   "DQN": {
     "status": "trained",
-    "experiments": 2,
-    "best_exp": 1,
-    "best_mean_reward": -97.588,
-    "best_max_reward": 64.09,
+    "experiments": 10,
+    "best_exp": 10,
+    "best_mean_reward": -77.979,
+    "best_max_reward": 155.346,
     "all_mean_rewards": [
-      -97.588,
-      -102.2
+      -106.021,
+      -105.955,
+      -94.675,
+      -93.166,
+      -92.739,
+      -95.066,
+      -93.694,
+      -95.396,
+      -97.59,
+      -77.979
     ],
     "all_max_rewards": [
-      64.09,
-      47.29
+      56.101,
+      37.251,
+      44.786,
+      33.097,
+      37.64,
+      69.122,
+      42.799,
+      101.89,
+      42.056,
+      155.346
     ],
     "best_params": {
       "learning_rate": 0.01,
       "gamma": 0.95,
       "buffer_size": 20000,
       "batch_size": 32,
-      "exploration_fraction": 0.15,
+      "exploration_fraction": 0.5,
       "net_arch": "[64, 64]"
     }
   },
@@ -62,19 +78,29 @@
   },
   "PPO": {
     "status": "trained",
-    "experiments": 3,
+    "experiments": 8,
     "best_exp": 4,
-    "best_mean_reward": 239.472,
-    "best_max_reward": 785.69,
+    "best_mean_reward": 333.146,
+    "best_max_reward": 821.09,
     "all_mean_rewards": [
-      207.85,
-      239.472,
-      109.9
+      36.471,
+      333.146,
+      65.444,
+      236.699,
+      231.768,
+      190.946,
+      166.779,
+      201.931
     ],
     "all_max_rewards": [
-      578.89,
-      785.69,
-      324.715
+      642.49,
+      821.09,
+      318.79,
+      643.89,
+      518.19,
+      588.79,
+      650.59,
+      572.715
     ],
     "best_params": {
       "learning_rate": 0.001,
