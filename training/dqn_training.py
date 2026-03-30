@@ -97,78 +97,78 @@ def _atomic_save(path, data):
 
 
 # ---------------------------------------------------------------------------
-# Hyperparameter Grid  (10 experiments)
+# Hyperparameter Grid  (10 experiments) — Focused around best found on 500k
 # ---------------------------------------------------------------------------
 DQN_EXPERIMENTS = [
-    # Exp 1 — Baseline
+    # Exp 1 — Best baseline from prior: LR=0.01, gamma=0.95
     dict(
-        learning_rate=1e-3, gamma=0.99, batch_size=64, buffer_size=50_000,
-        exploration_fraction=0.2, exploration_final_eps=0.05,
-        learning_starts=1000, train_freq=4, target_update_interval=500,
-        net_arch=[64, 64], total_timesteps=100_000,
-    ),
-    # Exp 2 — Lower LR, larger buffer
-    dict(
-        learning_rate=5e-4, gamma=0.99, batch_size=64, buffer_size=100_000,
-        exploration_fraction=0.3, exploration_final_eps=0.05,
-        learning_starts=2000, train_freq=4, target_update_interval=500,
-        net_arch=[64, 64], total_timesteps=100_000,
-    ),
-    # Exp 3 — Higher LR, small buffer
-    dict(
-        learning_rate=5e-3, gamma=0.95, batch_size=32, buffer_size=20_000,
-        exploration_fraction=0.15, exploration_final_eps=0.1,
+        learning_rate=1e-2, gamma=0.95, batch_size=32, buffer_size=20_000,
+        exploration_fraction=0.15, exploration_final_eps=0.05,
         learning_starts=500, train_freq=4, target_update_interval=250,
-        net_arch=[64, 64], total_timesteps=100_000,
+        net_arch=[64, 64], total_timesteps=500_000,
     ),
-    # Exp 4 — Deep network
+    # Exp 2 — Slightly smaller LR
     dict(
-        learning_rate=1e-3, gamma=0.99, batch_size=128, buffer_size=100_000,
-        exploration_fraction=0.25, exploration_final_eps=0.05,
-        learning_starts=2000, train_freq=4, target_update_interval=1000,
-        net_arch=[256, 256], total_timesteps=100_000,
+        learning_rate=8e-3, gamma=0.95, batch_size=32, buffer_size=20_000,
+        exploration_fraction=0.15, exploration_final_eps=0.05,
+        learning_starts=500, train_freq=4, target_update_interval=250,
+        net_arch=[64, 64], total_timesteps=500_000,
     ),
-    # Exp 5 — Wide + shallow
+    # Exp 3 — Larger LR
     dict(
-        learning_rate=1e-3, gamma=0.98, batch_size=64, buffer_size=50_000,
-        exploration_fraction=0.2, exploration_final_eps=0.05,
-        learning_starts=1000, train_freq=4, target_update_interval=500,
-        net_arch=[512], total_timesteps=100_000,
+        learning_rate=1.2e-2, gamma=0.95, batch_size=32, buffer_size=20_000,
+        exploration_fraction=0.15, exploration_final_eps=0.05,
+        learning_starts=500, train_freq=4, target_update_interval=250,
+        net_arch=[64, 64], total_timesteps=500_000,
     ),
-    # Exp 6 — High gamma, large batch
+    # Exp 4 — Gamma 0.93
     dict(
-        learning_rate=2e-4, gamma=0.999, batch_size=256, buffer_size=200_000,
-        exploration_fraction=0.3, exploration_final_eps=0.02,
-        learning_starts=5000, train_freq=8, target_update_interval=1000,
-        net_arch=[128, 128], total_timesteps=100_000,
+        learning_rate=1e-2, gamma=0.93, batch_size=32, buffer_size=20_000,
+        exploration_fraction=0.15, exploration_final_eps=0.05,
+        learning_starts=500, train_freq=4, target_update_interval=250,
+        net_arch=[64, 64], total_timesteps=500_000,
     ),
-    # Exp 7 — Aggressive exploration
+    # Exp 5 — Gamma 0.96
     dict(
-        learning_rate=1e-3, gamma=0.97, batch_size=64, buffer_size=50_000,
-        exploration_fraction=0.5, exploration_final_eps=0.1,
-        learning_starts=1000, train_freq=4, target_update_interval=500,
-        net_arch=[64, 64], total_timesteps=100_000,
+        learning_rate=1e-2, gamma=0.96, batch_size=32, buffer_size=20_000,
+        exploration_fraction=0.15, exploration_final_eps=0.05,
+        learning_starts=500, train_freq=4, target_update_interval=250,
+        net_arch=[64, 64], total_timesteps=500_000,
     ),
-    # Exp 8 — Very low LR, deep
+    # Exp 6 — Buffer 30k
     dict(
-        learning_rate=1e-4, gamma=0.99, batch_size=64, buffer_size=100_000,
-        exploration_fraction=0.25, exploration_final_eps=0.05,
-        learning_starts=3000, train_freq=4, target_update_interval=500,
-        net_arch=[256, 128, 64], total_timesteps=100_000,
+        learning_rate=1e-2, gamma=0.95, batch_size=32, buffer_size=30_000,
+        exploration_fraction=0.15, exploration_final_eps=0.05,
+        learning_starts=500, train_freq=4, target_update_interval=250,
+        net_arch=[64, 64], total_timesteps=500_000,
     ),
-    # Exp 9 — Fast update, small batch
+    # Exp 7 — Buffer 10k
     dict(
-        learning_rate=2e-3, gamma=0.95, batch_size=32, buffer_size=30_000,
-        exploration_fraction=0.1, exploration_final_eps=0.05,
-        learning_starts=500, train_freq=1, target_update_interval=100,
-        net_arch=[64, 64], total_timesteps=100_000,
+        learning_rate=1e-2, gamma=0.95, batch_size=32, buffer_size=10_000,
+        exploration_fraction=0.15, exploration_final_eps=0.05,
+        learning_starts=500, train_freq=4, target_update_interval=250,
+        net_arch=[64, 64], total_timesteps=500_000,
     ),
-    # Exp 10 — Balanced large-scale
+    # Exp 8 — Batch 16
     dict(
-        learning_rate=3e-4, gamma=0.99, batch_size=128, buffer_size=150_000,
-        exploration_fraction=0.2, exploration_final_eps=0.03,
-        learning_starts=3000, train_freq=4, target_update_interval=750,
-        net_arch=[128, 128], total_timesteps=100_000,
+        learning_rate=1e-2, gamma=0.95, batch_size=16, buffer_size=20_000,
+        exploration_fraction=0.15, exploration_final_eps=0.05,
+        learning_starts=500, train_freq=4, target_update_interval=250,
+        net_arch=[64, 64], total_timesteps=500_000,
+    ),
+    # Exp 9 — Batch 64
+    dict(
+        learning_rate=1e-2, gamma=0.95, batch_size=64, buffer_size=20_000,
+        exploration_fraction=0.15, exploration_final_eps=0.05,
+        learning_starts=500, train_freq=4, target_update_interval=250,
+        net_arch=[64, 64], total_timesteps=500_000,
+    ),
+    # Exp 10 — Slightly lower exploration_final_eps for exploitation
+    dict(
+        learning_rate=1e-2, gamma=0.95, batch_size=32, buffer_size=20_000,
+        exploration_fraction=0.15, exploration_final_eps=0.02,
+        learning_starts=500, train_freq=4, target_update_interval=250,
+        net_arch=[64, 64], total_timesteps=500_000,
     ),
 ]
 
@@ -178,18 +178,20 @@ DQN_EXPERIMENTS = [
 class RewardLoggerCallback(BaseCallback):
     def __init__(self, verbose=0):
         super().__init__(verbose)
-        self.episode_rewards = []
-        self._current_ep_reward = 0.0
+        self.episode_rewards: list[float] = []
+        # FIX (bug 1): one running total per parallel env, keyed by env index.
+        # A single shared float incorrectly accumulates rewards across all envs,
+        # inflating episode rewards by ~n_envs and corrupting all reported metrics.
+        self._current: dict[int, float] = {}
 
     def _on_step(self) -> bool:
         rewards = self.locals.get("rewards", [])
-        dones = self.locals.get("dones", [])
-        if rewards is not None:
-            for r, d in zip(rewards, dones):
-                self._current_ep_reward += r
-                if d:
-                    self.episode_rewards.append(self._current_ep_reward)
-                    self._current_ep_reward = 0.0
+        dones   = self.locals.get("dones",   [])
+        for env_idx, (r, d) in enumerate(zip(rewards, dones)):
+            self._current[env_idx] = self._current.get(env_idx, 0.0) + float(r)
+            if d:
+                self.episode_rewards.append(self._current[env_idx])
+                self._current[env_idx] = 0.0
         return True
 
 
@@ -233,8 +235,10 @@ def train_dqn():
 
         total_ts = p.pop("total_timesteps")
         net_arch = p.pop("net_arch")
-
-        policy_kwargs = dict(net_arch=net_arch)
+        # FIX (bug 4): SB3 >= 1.7 requires dict(pi=[...], vf=[...]) to create
+        # separate Q-network layers. The old list form still works for DQN (which
+        # has no separate vf head), but align with the PPO fix for consistency.
+        policy_kwargs = dict(net_arch=net_arch)  # DQN: list form is correct here
 
         try:
             vec_env = make_vec_env(make_env, n_envs=4)

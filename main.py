@@ -124,14 +124,21 @@ def run_demo(bridge, algo, episodes, use_mediapipe, video_path=None):
         obs, info = env.reset()
         done = False; ep_reward = 0.0; step = 0
         print(f"\n{SEP}\n  DEMO EPISODE {ep}/{episodes}  [{algo.upper()}]\n{SEP}")
+        action_counts: dict[str, int] = {}
         while not done:
             if model_type == "sb3":
-                action, _ = model.predict(obs, deterministic=True); action = int(action)
+                # FIX (bug 2): deterministic=True locks the policy to its argmax
+                # action permanently when it has collapsed — hiding the problem.
+                # Use stochastic sampling in demo so collapse becomes immediately
+                # visible in the action distribution printed at episode end.
+                action, _ = model.predict(obs, deterministic=False)
+                action = int(action)
             else:
                 import torch
                 with torch.no_grad():
                     dist = model(torch.FloatTensor(obs).unsqueeze(0))
                     action = dist.sample().item()
+            action_counts[ACTION_NAMES[action]] = action_counts.get(ACTION_NAMES[action], 0) + 1
             lm = next(lm_gen)
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated; ep_reward += reward; step += 1
@@ -150,6 +157,17 @@ def run_demo(bridge, algo, episodes, use_mediapipe, video_path=None):
         bridge.send_state(build_episode_end_packet(ep, ep_reward, step, rosc, algo.upper()))
         print(f"\n  {'★ ROSC — PATIENT REVIVED' if rosc else 'Episode ended'}  |  "
               f"Reward: {ep_reward:.2f}  |  Steps: {step}")
+        # FIX (bug 2 cont.): surface action collapse explicitly.
+        # If one action dominates >80% of steps the policy has collapsed and the
+        # model needs to be retrained with higher ent_coef.
+        top_action, top_count = max(action_counts.items(), key=lambda x: x[1])
+        collapse_pct = top_count / max(step, 1) * 100
+        if collapse_pct > 80:
+            print(f"  ⚠  Action collapse: '{top_action}' = {top_count}/{step} steps "
+                  f"({collapse_pct:.0f}%). Policy likely undertrained — raise ent_coef.")
+        else:
+            top4 = sorted(action_counts.items(), key=lambda x: -x[1])[:4]
+            print("  Action mix: " + " | ".join(f"{a}: {c}" for a, c in top4))
         time.sleep(1.5)
 
     env.close()

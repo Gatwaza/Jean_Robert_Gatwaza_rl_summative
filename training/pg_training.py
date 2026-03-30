@@ -90,49 +90,49 @@ def _atomic_save(path, data):
 
 
 # ---------------------------------------------------------------------------
-# PPO Hyperparameter Grid (10 experiments)
+# PPO Hyperparameter Grid (10 experiments) — focused around strong prior DQN signal
 # ---------------------------------------------------------------------------
 PPO_EXPERIMENTS = [
-    # Exp 1 — Baseline
-    dict(learning_rate=3e-4, gamma=0.99, gae_lambda=0.95, n_steps=2048,
+    # Exp 1 — Base candidate (LR=1e-3, gamma=0.95, strong exploitation)
+    dict(learning_rate=1e-3, gamma=0.95, gae_lambda=0.95, n_steps=2048,
+         batch_size=64, n_epochs=10, ent_coef=0.001, clip_range=0.2,
+         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
+    # Exp 2 — Lower LR
+    dict(learning_rate=5e-4, gamma=0.95, gae_lambda=0.95, n_steps=2048,
+         batch_size=64, n_epochs=10, ent_coef=0.001, clip_range=0.2,
+         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
+    # Exp 3 — Higher LR
+    dict(learning_rate=2e-3, gamma=0.95, gae_lambda=0.95, n_steps=2048,
+         batch_size=64, n_epochs=10, ent_coef=0.001, clip_range=0.2,
+         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
+    # Exp 4 — Lower gamma
+    dict(learning_rate=1e-3, gamma=0.90, gae_lambda=0.95, n_steps=2048,
+         batch_size=64, n_epochs=10, ent_coef=0.001, clip_range=0.2,
+         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
+    # Exp 5 — Higher gamma
+    dict(learning_rate=1e-3, gamma=0.99, gae_lambda=0.95, n_steps=2048,
+         batch_size=64, n_epochs=10, ent_coef=0.001, clip_range=0.2,
+         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
+    # Exp 6 — Lower entropy
+    dict(learning_rate=1e-3, gamma=0.95, gae_lambda=0.95, n_steps=2048,
+         batch_size=64, n_epochs=10, ent_coef=0.0001, clip_range=0.2,
+         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
+    # Exp 7 — Higher entropy
+    dict(learning_rate=1e-3, gamma=0.95, gae_lambda=0.95, n_steps=2048,
          batch_size=64, n_epochs=10, ent_coef=0.01, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=200_000),
-    # Exp 2 — Higher entropy for more exploration
-    dict(learning_rate=3e-4, gamma=0.99, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.05, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=200_000),
-    # Exp 3 — Tight clipping
-    dict(learning_rate=2e-4, gamma=0.99, gae_lambda=0.95, n_steps=1024,
-         batch_size=64, n_epochs=10, ent_coef=0.01, clip_range=0.1,
-         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=200_000),
-    # Exp 4 — Wide clipping
-    dict(learning_rate=3e-4, gamma=0.99, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.01, clip_range=0.4,
-         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=200_000),
-    # Exp 5 — Deep net
-    dict(learning_rate=1e-4, gamma=0.99, gae_lambda=0.95, n_steps=2048,
-         batch_size=128, n_epochs=10, ent_coef=0.01, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[256, 256], total_timesteps=200_000),
-    # Exp 6 — Low gamma
-    dict(learning_rate=3e-4, gamma=0.95, gae_lambda=0.90, n_steps=1024,
-         batch_size=64, n_epochs=5, ent_coef=0.02, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[128, 128], total_timesteps=200_000),
-    # Exp 7 — More epochs per update
-    dict(learning_rate=2e-4, gamma=0.99, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=20, ent_coef=0.005, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=200_000),
-    # Exp 8 — Large n_steps
-    dict(learning_rate=3e-4, gamma=0.99, gae_lambda=0.98, n_steps=4096,
-         batch_size=256, n_epochs=10, ent_coef=0.01, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=200_000),
-    # Exp 9 — Very low entropy, exploitation focus
-    dict(learning_rate=5e-4, gamma=0.99, gae_lambda=0.95, n_steps=512,
+         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
+    # Exp 8 — Smaller batch
+    dict(learning_rate=1e-3, gamma=0.95, gae_lambda=0.95, n_steps=2048,
          batch_size=32, n_epochs=10, ent_coef=0.001, clip_range=0.2,
-         max_grad_norm=1.0, net_arch=[128, 64], total_timesteps=200_000),
-    # Exp 10 — Balanced best-guess
-    dict(learning_rate=2.5e-4, gamma=0.99, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.02, clip_range=0.25,
-         max_grad_norm=0.5, net_arch=[128, 128], total_timesteps=200_000),
+         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
+    # Exp 9 — Larger batch
+    dict(learning_rate=1e-3, gamma=0.95, gae_lambda=0.95, n_steps=2048,
+         batch_size=128, n_epochs=10, ent_coef=0.001, clip_range=0.2,
+         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
+    # Exp 10 — Alternative clip range
+    dict(learning_rate=1e-3, gamma=0.95, gae_lambda=0.95, n_steps=2048,
+         batch_size=64, n_epochs=10, ent_coef=0.001, clip_range=0.1,
+         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
 ]
 
 # ---------------------------------------------------------------------------
@@ -159,28 +159,45 @@ REINFORCE_EXPERIMENTS = [
 class RewardLoggerCallback(BaseCallback):
     def __init__(self):
         super().__init__()
-        self.episode_rewards = []
-        self._current = 0.0
-        self.entropy_history = []
+        self.episode_rewards: list[float] = []
+        self.entropy_history: list[float] = []
+        # FIX (bug 1): one running total per parallel env, keyed by env index.
+        # A single shared float incorrectly accumulates rewards across all envs,
+        # inflating episode rewards by ~n_envs and corrupting all reported metrics.
+        self._current: dict[int, float] = {}
 
     def _on_step(self) -> bool:
         rewards = self.locals.get("rewards", [])
-        dones = self.locals.get("dones", [])
-        for r, d in zip(rewards, dones):
-            self._current += r
+        dones   = self.locals.get("dones",   [])
+        for env_idx, (r, d) in enumerate(zip(rewards, dones)):
+            self._current[env_idx] = self._current.get(env_idx, 0.0) + float(r)
             if d:
-                self.episode_rewards.append(self._current)
-                self._current = 0.0
+                self.episode_rewards.append(self._current[env_idx])
+                self._current[env_idx] = 0.0
         return True
 
     def _on_rollout_end(self) -> None:
-        # Track policy entropy if available
-        if hasattr(self.model, "policy"):
-            try:
-                # Estimate entropy from recent log probs
-                pass
-            except Exception:
-                pass
+        # FIX (bug 3): was a silent no-op (try: pass). Now actually measures entropy
+        # so policy collapse during training is visible in logs.
+        if not hasattr(self.model, "rollout_buffer"):
+            return
+        try:
+            import torch
+            buf = self.model.rollout_buffer
+            if not buf.full:
+                return
+            obs_t = torch.FloatTensor(
+                buf.observations.reshape(-1, buf.observations.shape[-1])
+            )
+            with torch.no_grad():
+                dist = self.model.policy.get_distribution(obs_t)
+                ent  = dist.entropy().mean().item()
+            self.entropy_history.append(ent)
+            if len(self.entropy_history) % 10 == 0:
+                warn = "  ⚠ collapsing — raise ent_coef" if ent < 0.5 else ""
+                log.info(f"  Policy entropy: {ent:.4f}{warn}")
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -378,7 +395,10 @@ def train_ppo():
 
         total_ts = p.pop("total_timesteps")
         net_arch = p.pop("net_arch")
-        policy_kwargs = dict(net_arch=net_arch)
+        # FIX (bug 4): SB3 >= 1.7 requires dict(pi=[...], vf=[...]) to create
+        # separate actor/critic networks. The old list form silently creates a shared
+        # trunk, which is suboptimal for actor-critic methods like PPO.
+        policy_kwargs = dict(net_arch=dict(pi=net_arch, vf=net_arch))
 
         try:
             vec_env = make_vec_env(make_env, n_envs=4)
