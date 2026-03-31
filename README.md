@@ -2,6 +2,8 @@
 
 An RL system that learns to recognize and evaluate correct first-aid (CPR) positions using MediaPipe body landmark observations. Three algorithms (DQN, REINFORCE, PPO) are trained in a custom Gymnasium environment and compared across 10 hyperparameter experiments each.
 
+
+
 ![Demo](demo.gif)
 
 ---
