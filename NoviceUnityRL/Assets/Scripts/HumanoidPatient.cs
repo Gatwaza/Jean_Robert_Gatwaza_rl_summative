@@ -1,17 +1,5 @@
-// HumanoidPatient.cs
-// ====================
-// Full humanoid patient lying supine on the floor mat.
-// Procedurally animates every CPR-relevant body response:
-//   - Chest sink + recoil on compressions (spring physics)
-//   - Head/neck rotation for airway opening
-//   - Arm flop and repositioning
-//   - Leg placement and knee bend
-//   - Whole-body lateral roll to recovery position
-//   - ROSC: subtle breathing rise, eyelid flutter (head bob), arm reach
-//   - Intercept response: chest depresses realistically when hands make contact
-//
-// Attach to an empty GameObject named "Patient".
-// No external assets or Animation Rigging package required.
+// HumanoidPatient.cs (v3 — ROSC sit-up, connected wrist, real compression sink)
+// ==============================================================================
 
 using System.Collections;
 using UnityEngine;
@@ -20,19 +8,15 @@ using UnityEngine;
 public class HumanoidPatient : MonoBehaviour
 {
     [Header("Appearance")]
-    public Color skinColor  = new Color(0.65f, 0.50f, 0.38f);
-    public Color shirtColor = new Color(0.85f, 0.85f, 0.85f);  // white shirt / hospital gown
-    public Color trouserColor = new Color(0.35f, 0.35f, 0.40f);
+    public Color skinColor    = new Color(0.65f, 0.50f, 0.38f);
+    public Color shirtColor   = new Color(0.88f, 0.88f, 0.88f);
+    public Color trouserColor = new Color(0.32f, 0.32f, 0.38f);
 
     [Header("Compression Physics")]
-    [Tooltip("How far the chest depresses in world units at full compression depth")]
-    public float maxCompressionDepth = 0.07f;
-    [Tooltip("Spring stiffness for chest recoil")]
-    public float springStiffness = 18f;
-    [Tooltip("Spring damping")]
-    public float springDamping  = 5f;
+    public float maxCompressionDepth = 0.06f;
+    public float springStiffness     = 20f;
+    public float springDamping       = 6f;
 
-    // ── Runtime state ────────────────────────────────────────────────────────
     private HumanoidBuilder.Body _body;
     private float _compressionTarget  = 0f;
     private float _compressionCurrent = 0f;
@@ -42,46 +26,36 @@ public class HumanoidPatient : MonoBehaviour
     private bool  _inRecovery         = false;
     private bool  _rosc               = false;
     private float _breathCycle        = 0f;
+    private bool  _sittingUp          = false;
 
-    // Chest bone world position cache (used for IK target by rescuer)
-    private Transform _chestTransform;
+    // The WORLD position of the chest — rescuer IK drives toward this
     public Vector3 ChestWorldPosition =>
-        _chestTransform != null ? _chestTransform.position : transform.position + Vector3.up * 0.3f;
+        _body?.chest != null ? _body.chest.position : transform.position + Vector3.up * 0.22f;
 
-    // ── Unity lifecycle ───────────────────────────────────────────────────────
     void Awake()
     {
-        // Patient lies supine on the floor mat.
-        // Root stays upright (identity) — we lift it 14cm above ground
-        // so body thickness doesn't clip the floor plane.
+        // Stand upright in local space; we rotate hips to lay flat
         transform.rotation = Quaternion.identity;
-        transform.position = new Vector3(
-            transform.position.x, 0.14f, transform.position.z);
+        transform.position = new Vector3(transform.position.x, 0.14f, transform.position.z);
 
         _body = HumanoidBuilder.Build(transform, skinColor, shirtColor, trouserColor, 1f);
 
-        // Rotate hips 90° forward so the entire spine chain lies along world Z
-        // (head toward +Z, feet toward -Z) — supine position
+        // Supine: hips rotated so spine chain runs horizontal along world Z
         _body.hips.localEulerAngles = new Vector3(90f, 0f, 0f);
-        // Hips close to ground level
-        _body.hips.localPosition = new Vector3(0, 0.05f, 0);
+        _body.hips.localPosition    = new Vector3(0f, 0.05f, 0f);
 
-        // Arms rest at sides
-        _body.leftUpperArm.localEulerAngles  = new Vector3(0, 0, -30f);
-        _body.rightUpperArm.localEulerAngles = new Vector3(0, 0,  30f);
-        _body.leftForearm.localEulerAngles   = new Vector3(0, 0, -15f);
-        _body.rightForearm.localEulerAngles  = new Vector3(0, 0,  15f);
+        // Arms rest at sides — rotated to lie along the body
+        _body.leftUpperArm.localEulerAngles  = new Vector3(0f, 0f, -25f);
+        _body.rightUpperArm.localEulerAngles = new Vector3(0f, 0f,  25f);
+        _body.leftForearm.localEulerAngles   = new Vector3(0f, 0f, -10f);
+        _body.rightForearm.localEulerAngles  = new Vector3(0f, 0f,  10f);
+        _body.leftWrist.localEulerAngles     = Vector3.zero;
+        _body.rightWrist.localEulerAngles    = Vector3.zero;
 
-        // Legs flat
-        _body.leftThigh.localEulerAngles  = new Vector3(0, 0, 5f);
-        _body.rightThigh.localEulerAngles = new Vector3(0, 0,-5f);
-
-        // Ground collider so rescuer can walk around
+        // Ground collider
         var col = GetComponent<BoxCollider>();
         col.size   = new Vector3(0.5f, 0.25f, 1.8f);
-        col.center = new Vector3(0, 0.12f, 0);
-
-        _chestTransform = _body.chest;
+        col.center = new Vector3(0f, 0.12f, 0f);
 
         BridgeEvents.OnStateUpdate  += HandleState;
         BridgeEvents.OnEpisodeEnd   += HandleEpisodeEnd;
@@ -102,198 +76,182 @@ public class HumanoidPatient : MonoBehaviour
         AnimateBreathing();
     }
 
-    // ── Event handlers ────────────────────────────────────────────────────────
+    // ── State handler ─────────────────────────────────────────────────────────
     void HandleState(StatePacket p)
     {
         switch (p.action)
         {
-            case 4:  // BEGIN_CHEST_COMPRESSIONS
-                float depth = p.vitals?.hand_placement ?? 0.5f;
-                _compressionTarget = maxCompressionDepth * Mathf.Clamp01(0.4f + depth * 0.6f);
+            case 4:  // CHEST COMPRESSIONS — sink proportional to hand placement
+                float depth = Mathf.Clamp01(0.4f + (p.vitals?.hand_placement ?? 0.5f) * 0.6f);
+                _compressionTarget = maxCompressionDepth * depth;
                 break;
             case 2: case 10: // OPEN_AIRWAY / TILT_HEAD_BACK
-                _headTiltTarget = 35f;
+                _headTiltTarget = 32f;
                 break;
-            case 5:  // RESCUE_BREATHS — trigger chest rise
-                StartCoroutine(ChestRise());
+            case 5:  // RESCUE BREATHS
+                StartCoroutine(ChestRiseTwice());
                 break;
-            case 8:  // RECOVERY_POSITION
+            case 8:  // RECOVERY POSITION
                 if (!_inRecovery) StartCoroutine(RollToRecovery());
                 break;
             default:
                 _compressionTarget = 0f;
                 break;
         }
-        _rosc = p.rosc;
-        if (_rosc && !_inRecovery) StartCoroutine(ROSCResponse());
+
+        // ROSC — trigger sit-up animation once
+        if (p.rosc && !_sittingUp)
+        {
+            _rosc = true;
+            StartCoroutine(SitUpROSC());
+        }
     }
 
-    void HandleEpisodeEnd(StatePacket p)
-    {
-        StopAllCoroutines();
-        StartCoroutine(ResetToSupine());
-    }
-
-    void HandlePhaseChange(StatePacket p)
-    {
-        StopAllCoroutines();
-        StartCoroutine(ResetToSupine());
-    }
+    void HandleEpisodeEnd(StatePacket p) => StartCoroutine(ResetPose());
+    void HandlePhaseChange(StatePacket p) => StartCoroutine(ResetPose());
 
     // ── Per-frame animations ──────────────────────────────────────────────────
 
     void AnimateChestSpring()
     {
-        // Spring physics: chest bone moves toward _compressionTarget
-        float error = _compressionTarget - _compressionCurrent;
-        _compressionVel += (error * springStiffness - _compressionVel * springDamping)
-                           * Time.deltaTime;
-        _compressionCurrent += _compressionVel * Time.deltaTime;
-        _compressionCurrent  = Mathf.Clamp(_compressionCurrent, 0f, maxCompressionDepth);
+        float err = _compressionTarget - _compressionCurrent;
+        _compressionVel += (err * springStiffness - _compressionVel * springDamping) * Time.deltaTime;
+        _compressionCurrent = Mathf.Clamp(_compressionCurrent + _compressionVel * Time.deltaTime,
+                                           0f, maxCompressionDepth);
 
-        // Apply as local Y offset on chest (patient is rotated so Y = depth into body)
-        var lp = _body.chest.localPosition;
-        _body.chest.localPosition = new Vector3(lp.x, lp.y, -_compressionCurrent);
-
-        // Shoulders follow chest slightly — realistic torso flex
-        float shoulderFollow = _compressionCurrent * 0.4f;
-        _body.leftShoulder.localPosition  = new Vector3(
-            _body.leftShoulder.localPosition.x,
-            _body.leftShoulder.localPosition.y,
-            -shoulderFollow);
-        _body.rightShoulder.localPosition = new Vector3(
-            _body.rightShoulder.localPosition.x,
-            _body.rightShoulder.localPosition.y,
-            -shoulderFollow);
+        if (_body?.chest != null)
+        {
+            var lp = _body.chest.localPosition;
+            _body.chest.localPosition = new Vector3(lp.x, lp.y, -_compressionCurrent);
+        }
+        // Shoulders follow slightly
+        float sf = _compressionCurrent * 0.35f;
+        if (_body?.leftShoulder != null)
+            _body.leftShoulder.localPosition = new Vector3(_body.leftShoulder.localPosition.x,
+                                                            _body.leftShoulder.localPosition.y, -sf);
+        if (_body?.rightShoulder != null)
+            _body.rightShoulder.localPosition = new Vector3(_body.rightShoulder.localPosition.x,
+                                                             _body.rightShoulder.localPosition.y, -sf);
     }
 
     void AnimateHeadTilt()
     {
-        _headTiltCurrent = Mathf.MoveTowards(
-            _headTiltCurrent, _headTiltTarget, 60f * Time.deltaTime);
-        // Neck extends (X rotation in supine = head tilts back)
-        _body.neck.localEulerAngles = new Vector3(_headTiltCurrent, 0, 0);
-        // Head follows at half the angle
-        _body.head.localEulerAngles = new Vector3(_headTiltCurrent * 0.5f, 0, 0);
+        _headTiltCurrent = Mathf.MoveTowards(_headTiltCurrent, _headTiltTarget, 55f * Time.deltaTime);
+        if (_body?.neck != null)  _body.neck.localEulerAngles = new Vector3(_headTiltCurrent, 0, 0);
+        if (_body?.head != null)  _body.head.localEulerAngles = new Vector3(_headTiltCurrent * 0.45f, 0, 0);
     }
 
     void AnimateBreathing()
     {
-        if (!_rosc && _compressionTarget < 0.01f) return;
-
-        // After ROSC: visible chest rise with breathing cycle
-        _breathCycle += Time.deltaTime * (_rosc ? 0.4f : 0.2f);
-        float rise = Mathf.Max(0, Mathf.Sin(_breathCycle * Mathf.PI * 2f)) * 0.015f;
-        var lp = _body.chest.localPosition;
-        _body.chest.localPosition = new Vector3(lp.x, lp.y + rise * 0.01f, lp.z);
-    }
-
-    // ── Coroutine animations ──────────────────────────────────────────────────
-
-    IEnumerator ChestRise()
-    {
-        // Two rescue breaths — chest rises and falls twice
-        for (int i = 0; i < 2; i++)
+        if (!_rosc) return;
+        _breathCycle += Time.deltaTime * 0.35f;
+        float rise = Mathf.Max(0f, Mathf.Sin(_breathCycle * Mathf.PI * 2f)) * 0.012f;
+        if (_body?.chest != null)
         {
-            float t = 0f;
-            while (t < 1f) {
-                t += Time.deltaTime * 1.5f;
-                float rise = Mathf.Sin(t * Mathf.PI) * 0.025f;
-                var lp = _body.chest.localPosition;
-                _body.chest.localPosition = new Vector3(lp.x, lp.y, lp.z - rise);
-                yield return null;
-            }
-            yield return new WaitForSeconds(0.3f);
+            var lp = _body.chest.localPosition;
+            _body.chest.localPosition = new Vector3(lp.x, lp.y + rise, lp.z);
         }
     }
 
-    IEnumerator RollToRecovery()
+    // ── ROSC sit-up ───────────────────────────────────────────────────────────
+    IEnumerator SitUpROSC()
     {
-        _inRecovery = true;
-        float t = 0f;
-        Quaternion startRot = _body.hips.rotation;
-        Quaternion targetRot = startRot * Quaternion.Euler(0, 0, 75f);
+        _sittingUp = true;
+        yield return new WaitForSeconds(0.8f);
 
-        // Also bend top knee (left leg) for stable recovery position
-        Quaternion kneeBend = Quaternion.Euler(0, 0, -60f);
-        Quaternion kneeStart = _body.leftThigh.localRotation;
-
-        while (t < 1f)
-        {
-            t += Time.deltaTime * 0.6f;
-            float smooth = Mathf.SmoothStep(0, 1, t);
-            _body.hips.rotation = Quaternion.Slerp(startRot, targetRot, smooth);
-            _body.leftThigh.localRotation =
-                Quaternion.Slerp(kneeStart, kneeBend, smooth);
-            yield return null;
-        }
-    }
-
-    IEnumerator ROSCResponse()
-    {
-        yield return new WaitForSeconds(0.5f);
-
-        // Subtle head turn — patient becoming aware
+        // Gradually rotate hips from supine (90°) toward seated (~20°)
+        Quaternion supine = _body.hips.localRotation;
+        Quaternion seated = Quaternion.Euler(20f, 0f, 0f);
         float t = 0f;
         while (t < 1f)
         {
-            t += Time.deltaTime * 0.8f;
-            float nod = Mathf.Sin(t * Mathf.PI * 2f) * 8f;
-            _body.head.localEulerAngles = new Vector3(
-                _body.head.localEulerAngles.x, nod, 0);
+            t += Time.deltaTime * 0.4f;   // slow, realistic ~2.5s rise
+            _body.hips.localRotation = Quaternion.Slerp(supine, seated, Mathf.SmoothStep(0,1,t));
+            // Also raise hips off the ground
+            _body.hips.localPosition = new Vector3(0f,
+                Mathf.Lerp(0.05f, 0.55f, Mathf.SmoothStep(0,1,t)), 0f);
             yield return null;
         }
 
-        // Arm slight raise — reaching for consciousness
+        // Head lifts, looks around
         t = 0f;
-        Quaternion armStart  = _body.rightUpperArm.localRotation;
-        Quaternion armTarget = armStart * Quaternion.Euler(-30f, 0, 0);
         while (t < 1f)
         {
             t += Time.deltaTime * 1.2f;
-            _body.rightUpperArm.localRotation =
-                Quaternion.Slerp(armStart, armTarget, Mathf.SmoothStep(0, 1, t));
-            yield return null;
-        }
-        // Return arm
-        t = 0f;
-        while (t < 1f)
-        {
-            t += Time.deltaTime * 0.6f;
-            _body.rightUpperArm.localRotation =
-                Quaternion.Slerp(armTarget, armStart, Mathf.SmoothStep(0, 1, t));
+            float nod = Mathf.Sin(t * Mathf.PI * 1.5f) * 12f;
+            if (_body?.head != null) _body.head.localEulerAngles = new Vector3(nod, nod * 0.3f, 0);
             yield return null;
         }
 
-        // Breathing begins: handled in AnimateBreathing() via _rosc flag
+        // Arms reach forward slightly — natural seated recovery
+        if (_body?.leftUpperArm != null)
+            _body.leftUpperArm.localEulerAngles = new Vector3(-20f, 0f, -15f);
+        if (_body?.rightUpperArm != null)
+            _body.rightUpperArm.localEulerAngles = new Vector3(-20f, 0f,  15f);
     }
 
-    IEnumerator ResetToSupine()
+    // ── Chest rise on rescue breaths ──────────────────────────────────────────
+    IEnumerator ChestRiseTwice()
     {
-        _inRecovery = false;
-        _rosc = false;
-        _compressionTarget  = 0f;
-        _compressionCurrent = 0f;
-        _compressionVel     = 0f;
-        _headTiltTarget     = 0f;
-        _breathCycle        = 0f;
+        for (int i = 0; i < 2; i++)
+        {
+            float t = 0f;
+            while (t < 1f)
+            {
+                t += Time.deltaTime * 1.8f;
+                float rise = Mathf.Sin(t * Mathf.PI) * 0.022f;
+                if (_body?.chest != null)
+                {
+                    var lp = _body.chest.localPosition;
+                    _body.chest.localPosition = new Vector3(lp.x, lp.y, lp.z - rise);
+                }
+                yield return null;
+            }
+            yield return new WaitForSeconds(0.25f);
+        }
+    }
+
+    // ── Recovery position lateral roll ────────────────────────────────────────
+    IEnumerator RollToRecovery()
+    {
+        _inRecovery = true;
+        Quaternion start  = _body.hips.rotation;
+        Quaternion target = start * Quaternion.Euler(0f, 0f, 72f);
+        Quaternion kneeStart = _body.leftThigh.localRotation;
+        Quaternion kneeBent  = Quaternion.Euler(0f, 0f, -55f);
+        float t = 0f;
+        while (t < 1f)
+        {
+            t += Time.deltaTime * 0.55f;
+            float s = Mathf.SmoothStep(0,1,t);
+            _body.hips.rotation = Quaternion.Slerp(start, target, s);
+            _body.leftThigh.localRotation = Quaternion.Slerp(kneeStart, kneeBent, s);
+            yield return null;
+        }
+    }
+
+    IEnumerator ResetPose()
+    {
+        _sittingUp = false; _rosc = false; _inRecovery = false;
+        _compressionTarget = 0f; _compressionCurrent = 0f; _compressionVel = 0f;
+        _headTiltTarget = 0f; _breathCycle = 0f;
 
         float t = 0f;
         Quaternion startHips = _body.hips.rotation;
-        Quaternion baseHips  = Quaternion.Euler(90f, 0f, 0f);
+        Quaternion supine    = Quaternion.Euler(90f, 0f, 0f);
+        Vector3    startHipsPos = _body.hips.localPosition;
         while (t < 1f)
         {
             t += Time.deltaTime * 1.5f;
-            _body.hips.rotation = Quaternion.Slerp(startHips, baseHips,
-                                                    Mathf.SmoothStep(0, 1, t));
-            _body.hips.localPosition = new Vector3(0, 0.05f, 0);
-            _body.leftThigh.localRotation = Quaternion.Slerp(
-                _body.leftThigh.localRotation, Quaternion.Euler(0,0,5f),
-                Mathf.SmoothStep(0, 1, t));
+            float s = Mathf.SmoothStep(0,1,t);
+            _body.hips.rotation      = Quaternion.Slerp(startHips, supine, s);
+            _body.hips.localPosition = Vector3.Lerp(startHipsPos, new Vector3(0f,0.05f,0f), s);
+            _body.leftThigh.localRotation  = Quaternion.Slerp(_body.leftThigh.localRotation,
+                                                               Quaternion.Euler(0f,0f,5f), s);
             yield return null;
         }
-
-        // Reset chest local position
-        _body.chest.localPosition = new Vector3(0, 0.20f, 0);
+        if (_body?.leftUpperArm  != null) _body.leftUpperArm.localEulerAngles  = new Vector3(0f,0f,-25f);
+        if (_body?.rightUpperArm != null) _body.rightUpperArm.localEulerAngles = new Vector3(0f,0f, 25f);
+        if (_body?.head          != null) _body.head.localEulerAngles          = Vector3.zero;
     }
 }

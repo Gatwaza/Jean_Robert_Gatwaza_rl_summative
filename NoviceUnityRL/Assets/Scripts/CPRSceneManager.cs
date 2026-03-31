@@ -90,13 +90,22 @@ public class CPRSceneManager : MonoBehaviour
         {8,"storyteller"}, {9,"compression"}, {10,"airway"},     {11,"storyteller"},
     };
 
-    // ── Spring camera state ───────────────────────────────────────────────────
+    // ── Camera state ─────────────────────────────────────────────────────────
     private Vector3    _camVelPos  = Vector3.zero;
     private Vector3    _camTgtPos;
     private Quaternion _camTgtRot;
     private float      _camVelFov  = 0f;
     private float      _tgtFov     = 50f;
-    private float      _smooth     = 0.6f;  // seconds to reach target
+    private float      _smooth     = 0.6f;
+
+    // Orbital camera
+    private float  _orbitAngle      = -35f;   // start angle (degrees around Y)
+    private float  _orbitRadius     = 2.8f;   // distance from scene centre
+    private float  _orbitHeight     = 1.35f;  // elevation
+    private float  _orbitSpeed      = 12f;    // degrees per second
+    private bool   _orbiting        = true;
+    private float  _orbitResumeT    = 0f;     // time to resume orbit after cut
+    private static readonly Vector3 SceneCentre = new Vector3(0.3f, 0.3f, 0.1f);
 
     void Start()
     {
@@ -123,17 +132,43 @@ public class CPRSceneManager : MonoBehaviour
     {
         if (mainCamera == null) return;
 
-        mainCamera.transform.position = Vector3.SmoothDamp(
-            mainCamera.transform.position, _camTgtPos,
-            ref _camVelPos, _smooth);
+        // Resume orbit after a cut has settled
+        if (!_orbiting && Time.time > _orbitResumeT)
+            _orbiting = true;
 
-        mainCamera.transform.rotation = Quaternion.Slerp(
-            mainCamera.transform.rotation, _camTgtRot,
-            Time.deltaTime / Mathf.Max(_smooth * 0.7f, 0.01f));
+        if (_orbiting)
+        {
+            // Advance orbital angle
+            _orbitAngle += _orbitSpeed * Time.deltaTime;
+            if (_orbitAngle > 360f) _orbitAngle -= 360f;
+
+            // Compute position on circle around SceneCentre
+            float rad = _orbitAngle * Mathf.Deg2Rad;
+            Vector3 orbitPos = SceneCentre + new Vector3(
+                Mathf.Sin(rad) * _orbitRadius,
+                _orbitHeight,
+                Mathf.Cos(rad) * _orbitRadius);
+
+            // Smooth drift toward orbit position — not snappy
+            mainCamera.transform.position = Vector3.SmoothDamp(
+                mainCamera.transform.position, orbitPos, ref _camVelPos, 0.8f);
+            Quaternion lookRot = Quaternion.LookRotation(
+                (SceneCentre - mainCamera.transform.position).normalized, Vector3.up);
+            mainCamera.transform.rotation = Quaternion.Slerp(
+                mainCamera.transform.rotation, lookRot, Time.deltaTime * 1.8f);
+        }
+        else
+        {
+            // Driven cut — spring to _camTgtPos
+            mainCamera.transform.position = Vector3.SmoothDamp(
+                mainCamera.transform.position, _camTgtPos, ref _camVelPos, _smooth);
+            mainCamera.transform.rotation = Quaternion.Slerp(
+                mainCamera.transform.rotation, _camTgtRot,
+                Time.deltaTime / Mathf.Max(_smooth * 0.7f, 0.01f));
+        }
 
         mainCamera.fieldOfView = Mathf.SmoothDamp(
-            mainCamera.fieldOfView, _tgtFov,
-            ref _camVelFov, _smooth * 0.8f);
+            mainCamera.fieldOfView, _tgtFov, ref _camVelFov, _smooth * 0.8f);
     }
 
     void SpawnScene()
@@ -197,6 +232,11 @@ public class CPRSceneManager : MonoBehaviour
         };
         environment?.SetPhaseAmbient(col);
 
+        // Adjust orbit speed per phase
+        _orbitSpeed  = phase == "random" ? 16f : phase == "training" ? 10f : 8f;
+        _orbitHeight = phase == "demo"   ? 1.5f : 1.35f;
+        _orbitRadius = phase == "demo"   ? 2.4f : 2.8f;
+
         _smooth = 1.4f;   // slow drift on phase change
         CamRig rig = phase switch {
             "random"   => RigOverhead,
@@ -246,7 +286,13 @@ public class CPRSceneManager : MonoBehaviour
             mainCamera.fieldOfView        = rig.fov;
             _camVelPos = Vector3.zero;
             _camVelFov = 0f;
+            _orbiting  = false;
+            return;
         }
+
+        // Pause orbit for this cut, resume after _smooth + 2s settle time
+        _orbiting     = false;
+        _orbitResumeT = Time.time + _smooth + 2.0f;
     }
 
     IEnumerator RestoreSmooth(float delay, float target)
