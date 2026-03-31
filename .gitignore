@@ -1,2 +1,25 @@
 venv/
 *.pkg
+# Python virtual environment
+venv/
+
+# Unity Library (auto-generated, never commit)
+NoviceUnityRL/Library/
+NoviceUnityRL/Temp/
+NoviceUnityRL/Logs/
+NoviceUnityRL/obj/
+NoviceUnityRL/Build/
+
+# Data files
+data/extracted/
+*.pkl
+*.tar.gz
+*.tar.7z
+
+# Large binaries
+*.pkg
+*.dylib
+*.so
+
+# Demo artifacts
+demo.gif
