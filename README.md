@@ -1,8 +1,10 @@
-# CPR Position Assessment — Reinforcement Learning
+# Your visual CPR Position Assessment tool with Reinforcement Learning
 
-An RL system that learns to recognize and evaluate correct first-aid (CPR) positions using MediaPipe body landmark observations. Three algorithms (DQN, REINFORCE, PPO) are trained in a custom Gymnasium environment and compared across 10 hyperparameter experiments each.
+This thorough work demonstrates the potential of RL to assess and provide guidance on procedures like CPR, which could have real-world applications in training and emergency response. It's built with custom environment utilizing MediaPipe and Unity for visualization how the model applies its learned policy in a simulated CPR scenario. The discrete action are 11 actions that represent different steps in the CPR protocol, and the reward structure encourages correct sequential actions while penalizing mistakes and inaction.
 
+Three algorithms (DQN, REINFORCE, PPO) are trained in a custom Gymnasium environment and compared across 10 hyperparameter experiments each.
 
+# Demo
 
 <p align="center">
   <img src="demo.gif" width="900">
@@ -13,10 +15,15 @@ An RL system that learns to recognize and evaluate correct first-aid (CPR) posit
 ## Project Structure
 
 ```
-project_root/
+NoviceRL/
 ├── environment/
-│   ├── custom_env.py        # Custom Gymnasium environment (53-dim obs, 12 discrete actions)
-│   └── rendering.py         # Pygame visualization GUI
+│   ├──__init__.py
+│   └── custom_env.py   
+|   ├── mediapipe_exctractor.py
+│   └── rendering.py
+│   ├── unity_bridge.py        # Custom Gymnasium environment (53-dim obs, 12 discrete actions)
+│   └── rendering.py
+|                              # Pygame visualization GUI
 ├── training/
 │   ├── dqn_training.py      # DQN — 10 experiments, auto-resume
 │   └── pg_training.py       # REINFORCE + PPO — 10 experiments each, auto-resume
