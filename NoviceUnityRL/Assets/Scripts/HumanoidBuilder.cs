@@ -1,10 +1,4 @@
-// HumanoidBuilder.cs  (v2 — properly connected hands/fingers, wrist joint)
-// =========================================================================
-// Procedurally constructs a proportioned humanoid from Unity primitives.
-// All segments are continuously connected — no gaps between forearm/wrist/palm/fingers.
-// The hand is built with a WRIST joint between forearm and palm so fingers
-// always follow the arm chain without floating.
-
+// HumanoidBuilder.cs (v3 — proper kneeling joints, neck close to chest, no crossed legs)
 using UnityEngine;
 
 public static class HumanoidBuilder
@@ -21,9 +15,9 @@ public static class HumanoidBuilder
     {
         public Transform root;
         public Transform hips, spine, chest, neck, head;
-        public Transform leftShoulder, leftUpperArm, leftForearm, leftWrist, leftHand;
+        public Transform leftShoulder,  leftUpperArm,  leftForearm,  leftWrist,  leftHand;
         public Transform rightShoulder, rightUpperArm, rightForearm, rightWrist, rightHand;
-        public Transform leftThigh, leftShin, leftFoot;
+        public Transform leftThigh,  leftShin,  leftFoot;
         public Transform rightThigh, rightShin, rightFoot;
     }
 
@@ -31,32 +25,30 @@ public static class HumanoidBuilder
     {
         var b = new Body { root = root };
 
-        // ── Spine chain ─────────────────────────────────────────────────────
         b.hips  = Node(root,    "Hips",  new Vector3(0, 0.95f*h, 0));
         b.spine = Node(b.hips,  "Spine", new Vector3(0, 0.12f*h, 0));
         b.chest = Node(b.spine, "Chest", new Vector3(0, 0.20f*h, 0));
-        b.neck  = Node(b.chest, "Neck",  new Vector3(0, 0.26f*h, 0));
-        b.head  = Node(b.neck,  "Head",  new Vector3(0, 0.08f*h, 0));
+        // FIX: neck much closer — was 0.26, now 0.12 so no gap between neck/chest
+        b.neck  = Node(b.chest, "Neck",  new Vector3(0, 0.12f*h, 0));
+        b.head  = Node(b.neck,  "Head",  new Vector3(0, 0.07f*h, 0));
 
-        // ── Left arm ────────────────────────────────────────────────────────
-        b.leftShoulder  = Node(b.chest,         "L_Shoulder", new Vector3( 0.18f*h, 0.22f*h, 0));
+        b.leftShoulder  = Node(b.chest,         "L_Shoulder", new Vector3( 0.18f*h, 0.10f*h, 0));
         b.leftUpperArm  = Node(b.leftShoulder,  "L_UpperArm", new Vector3( 0.13f*h, 0, 0));
-        b.leftForearm   = Node(b.leftUpperArm,  "L_Forearm",  new Vector3( 0.26f*h, 0, 0));
-        b.leftWrist     = Node(b.leftForearm,   "L_Wrist",    new Vector3( 0.23f*h, 0, 0));
+        b.leftForearm   = Node(b.leftUpperArm,  "L_Forearm",  new Vector3( 0.25f*h, 0, 0));
+        b.leftWrist     = Node(b.leftForearm,   "L_Wrist",    new Vector3( 0.22f*h, 0, 0));
         b.leftHand      = Node(b.leftWrist,     "L_Hand",     new Vector3( 0.04f*h, 0, 0));
 
-        // ── Right arm ───────────────────────────────────────────────────────
-        b.rightShoulder = Node(b.chest,         "R_Shoulder", new Vector3(-0.18f*h, 0.22f*h, 0));
+        b.rightShoulder = Node(b.chest,         "R_Shoulder", new Vector3(-0.18f*h, 0.10f*h, 0));
         b.rightUpperArm = Node(b.rightShoulder, "R_UpperArm", new Vector3(-0.13f*h, 0, 0));
-        b.rightForearm  = Node(b.rightUpperArm, "R_Forearm",  new Vector3(-0.26f*h, 0, 0));
-        b.rightWrist    = Node(b.rightForearm,  "R_Wrist",    new Vector3(-0.23f*h, 0, 0));
+        b.rightForearm  = Node(b.rightUpperArm, "R_Forearm",  new Vector3(-0.25f*h, 0, 0));
+        b.rightWrist    = Node(b.rightForearm,  "R_Wrist",    new Vector3(-0.22f*h, 0, 0));
         b.rightHand     = Node(b.rightWrist,    "R_Hand",     new Vector3(-0.04f*h, 0, 0));
 
-        // ── Legs ────────────────────────────────────────────────────────────
-        b.leftThigh  = Node(b.hips, "L_Thigh", new Vector3( 0.10f*h, -0.05f*h, 0));
-        b.leftShin   = Node(b.leftThigh, "L_Shin",  new Vector3(0, -0.42f*h, 0));
-        b.leftFoot   = Node(b.leftShin,  "L_Foot",  new Vector3(0, -0.40f*h, 0));
-        b.rightThigh = Node(b.hips, "R_Thigh", new Vector3(-0.10f*h, -0.05f*h, 0));
+        b.leftThigh  = Node(b.hips, "L_Thigh", new Vector3( 0.11f*h, -0.05f*h, 0));
+        b.leftShin   = Node(b.leftThigh,  "L_Shin", new Vector3(0, -0.42f*h, 0));
+        b.leftFoot   = Node(b.leftShin,   "L_Foot", new Vector3(0, -0.40f*h, 0));
+
+        b.rightThigh = Node(b.hips, "R_Thigh", new Vector3(-0.11f*h, -0.05f*h, 0));
         b.rightShin  = Node(b.rightThigh, "R_Shin", new Vector3(0, -0.42f*h, 0));
         b.rightFoot  = Node(b.rightShin,  "R_Foot", new Vector3(0, -0.40f*h, 0));
 
@@ -66,43 +58,36 @@ public static class HumanoidBuilder
 
     static void AttachMeshes(Body b, Color skin, Color shirt, Color trouser, float h)
     {
-        // Head + hair
         Seg(b.head, PrimitiveType.Sphere, "HeadMesh",
             new Vector3(0.19f,0.22f,0.19f)*h, new Vector3(0,0.09f*h,0), skin);
         Seg(b.head, PrimitiveType.Sphere, "Hair",
-            new Vector3(0.195f,0.14f,0.195f)*h, new Vector3(0,0.16f*h,0), HairDark);
-
-        // Neck
+            new Vector3(0.195f,0.13f,0.195f)*h, new Vector3(0,0.16f*h,0), HairDark);
+        // Neck mesh — shorter, sits right on chest
         Seg(b.neck, PrimitiveType.Capsule, "NeckMesh",
-            new Vector3(0.08f,0.06f,0.08f)*h, Vector3.zero, skin);
-
-        // Torso + pelvis
+            new Vector3(0.08f,0.055f,0.08f)*h, new Vector3(0,0.03f*h,0), skin);
         Seg(b.spine, PrimitiveType.Capsule, "TorsoMesh",
             new Vector3(0.28f,0.22f,0.15f)*h, new Vector3(0,0.18f*h,0), shirt);
         Seg(b.hips, PrimitiveType.Capsule, "HipsMesh",
             new Vector3(0.28f,0.10f,0.15f)*h, new Vector3(0,0.05f*h,0), trouser);
 
-        // Arms — each segment connects end-to-end with overlap at joint
-        ArmCapsule(b.leftUpperArm,  skin, h, 0.11f, 0.25f,  true);
-        ArmCapsule(b.leftForearm,   skin, h, 0.09f, 0.22f,  true);
-        // Wrist connector — small ball that bridges forearm → palm with no gap
-        Seg(b.leftWrist, PrimitiveType.Sphere, "L_WristBall",
+        ArmCapsule(b.leftUpperArm,  skin, h, 0.11f, 0.24f,  true);
+        ArmCapsule(b.leftForearm,   skin, h, 0.09f, 0.21f,  true);
+        Seg(b.leftWrist,  PrimitiveType.Sphere, "L_WristBall",
             new Vector3(0.10f,0.10f,0.10f)*h, Vector3.zero, skin);
         HandPalm(b.leftHand,  skin, h, left:true);
 
-        ArmCapsule(b.rightUpperArm, skin, h, 0.11f, 0.25f, false);
-        ArmCapsule(b.rightForearm,  skin, h, 0.09f, 0.22f, false);
+        ArmCapsule(b.rightUpperArm, skin, h, 0.11f, 0.24f, false);
+        ArmCapsule(b.rightForearm,  skin, h, 0.09f, 0.21f, false);
         Seg(b.rightWrist, PrimitiveType.Sphere, "R_WristBall",
             new Vector3(0.10f,0.10f,0.10f)*h, Vector3.zero, skin);
         HandPalm(b.rightHand, skin, h, left:false);
 
-        // Shirt cuffs at wrist
+        // Shirt cuffs
         Seg(b.leftWrist,  PrimitiveType.Sphere, "L_Cuff",
             new Vector3(0.11f,0.11f,0.11f)*h, Vector3.zero, ShirtWhite);
         Seg(b.rightWrist, PrimitiveType.Sphere, "R_Cuff",
             new Vector3(0.11f,0.11f,0.11f)*h, Vector3.zero, ShirtWhite);
 
-        // Legs
         LegCapsule(b.leftThigh,  trouser, h);
         LegCapsule(b.leftShin,   skin,    h);
         FootMesh(b.leftFoot,  h);
@@ -111,7 +96,6 @@ public static class HumanoidBuilder
         FootMesh(b.rightFoot, h);
     }
 
-    // ── Arm capsule — horizontal, centered between two joints ────────────────
     static void ArmCapsule(Transform t, Color c, float h, float r, float len, bool left)
     {
         float sign = left ? 1f : -1f;
@@ -119,42 +103,34 @@ public static class HumanoidBuilder
         go.name = "ArmSeg";
         go.transform.SetParent(t, false);
         go.transform.localScale       = new Vector3(r*h, len*h*0.5f, r*h);
-        go.transform.localPosition    = new Vector3(sign * len * 0.5f * h, 0, 0);
+        go.transform.localPosition    = new Vector3(sign*len*0.5f*h, 0, 0);
         go.transform.localEulerAngles = new Vector3(0, 0, 90);
         SetColor(go, c); RemoveCollider(go);
     }
 
-    // ── Hand palm + fingers — all parented to b.leftHand/rightHand ──────────
-    // This means they ALWAYS follow the wrist joint — no floating.
     static void HandPalm(Transform hand, Color c, float h, bool left)
     {
         float side = left ? 1f : -1f;
-
-        // Palm block — flat box shape
         var palm = GameObject.CreatePrimitive(PrimitiveType.Cube);
         palm.name = "Palm";
         palm.transform.SetParent(hand, false);
         palm.transform.localScale    = new Vector3(0.14f*h, 0.05f*h, 0.11f*h);
-        palm.transform.localPosition = new Vector3(side * 0.07f*h, 0, 0);
+        palm.transform.localPosition = new Vector3(side*0.07f*h, 0, 0);
         SetColor(palm, c); RemoveCollider(palm);
 
-        // 4 fingers — parented to hand, extend from palm edge
-        string[] fingerNames = {"Index","Middle","Ring","Pinky"};
-        float[] zOffsets = { 0.04f, 0.013f, -0.013f, -0.04f };
-        float[] lengths  = { 0.07f, 0.075f, 0.065f, 0.05f };
+        string[] fnames = {"Index","Middle","Ring","Pinky"};
+        float[] zOff = { 0.04f, 0.013f, -0.013f, -0.04f };
+        float[] lens = { 0.07f, 0.075f,  0.065f,  0.05f };
         for (int i = 0; i < 4; i++)
         {
             var f = GameObject.CreatePrimitive(PrimitiveType.Capsule);
-            f.name = fingerNames[i];
+            f.name = fnames[i];
             f.transform.SetParent(hand, false);
-            f.transform.localScale       = new Vector3(0.018f*h, lengths[i]*h, 0.018f*h);
-            f.transform.localPosition    = new Vector3(side*(0.135f + lengths[i])*h,
-                                                       0, zOffsets[i]*h);
+            f.transform.localScale       = new Vector3(0.018f*h, lens[i]*h, 0.018f*h);
+            f.transform.localPosition    = new Vector3(side*(0.135f+lens[i])*h, 0, zOff[i]*h);
             f.transform.localEulerAngles = new Vector3(0, 0, 90);
             SetColor(f, c); RemoveCollider(f);
         }
-
-        // Thumb — shorter, angled outward
         var thumb = GameObject.CreatePrimitive(PrimitiveType.Capsule);
         thumb.name = "Thumb";
         thumb.transform.SetParent(hand, false);
