@@ -4,7 +4,9 @@ An RL system that learns to recognize and evaluate correct first-aid (CPR) posit
 
 
 
-![Demo](demo.gif)
+<p align="center">
+  <img src="demo.gif" width="900">
+</p>
 
 ---
 
