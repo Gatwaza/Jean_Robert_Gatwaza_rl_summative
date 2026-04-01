@@ -93,46 +93,46 @@ def _atomic_save(path, data):
 # PPO Hyperparameter Grid (10 experiments) — focused around strong prior DQN signal
 # ---------------------------------------------------------------------------
 PPO_EXPERIMENTS = [
-    # Exp 1 — Base candidate (LR=1e-3, gamma=0.95, strong exploration)
-    dict(learning_rate=1e-3, gamma=0.95, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.2, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
-    # Exp 2 — Lower LR, high entropy
-    dict(learning_rate=5e-4, gamma=0.95, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.2, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
-    # Exp 3 — Higher LR, high entropy
-    dict(learning_rate=2e-3, gamma=0.95, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.2, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
-    # Exp 4 — Lower gamma, moderate entropy
-    dict(learning_rate=1e-3, gamma=0.90, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.2, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
-    # Exp 5 — Higher gamma, high entropy
+    # Exp 1 — Baseline with high entropy to prevent collapse
+    dict(learning_rate=3e-4, gamma=0.99, gae_lambda=0.95, n_steps=2048,
+         batch_size=64, n_epochs=10, ent_coef=0.05, clip_range=0.2,
+         max_grad_norm=0.5, net_arch=[128, 128], total_timesteps=500_000),
+    # Exp 2 — Stronger entropy regularisation
+    dict(learning_rate=3e-4, gamma=0.99, gae_lambda=0.95, n_steps=2048,
+         batch_size=64, n_epochs=10, ent_coef=0.10, clip_range=0.2,
+         max_grad_norm=0.5, net_arch=[128, 128], total_timesteps=500_000),
+    # Exp 3 — Higher LR, stronger entropy
     dict(learning_rate=1e-3, gamma=0.99, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.2, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
-    # Exp 6 — Medium entropy
-    dict(learning_rate=1e-3, gamma=0.95, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.2, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
-    # Exp 7 — High entropy exploration
-    dict(learning_rate=1e-3, gamma=0.95, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.25, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
-    # Exp 8 — Smaller batch, high entropy
-    dict(learning_rate=1e-3, gamma=0.95, gae_lambda=0.95, n_steps=2048,
-         batch_size=32, n_epochs=10, ent_coef=0.2, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
-    # Exp 9 — Larger batch, high entropy
-    dict(learning_rate=1e-3, gamma=0.95, gae_lambda=0.95, n_steps=2048,
-         batch_size=128, n_epochs=10, ent_coef=0.2, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
-    # Exp 10 — Alternative clip range, high entropy
-    dict(learning_rate=1e-3, gamma=0.95, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.2, clip_range=0.1,
-         max_grad_norm=0.5, net_arch=[64, 64], total_timesteps=500_000),
+         batch_size=64, n_epochs=10, ent_coef=0.10, clip_range=0.2,
+         max_grad_norm=0.5, net_arch=[128, 128], total_timesteps=500_000),
+    # Exp 4 — Larger network for better generalisation
+    dict(learning_rate=3e-4, gamma=0.99, gae_lambda=0.95, n_steps=2048,
+         batch_size=64, n_epochs=10, ent_coef=0.05, clip_range=0.2,
+         max_grad_norm=0.5, net_arch=[256, 256], total_timesteps=500_000),
+    # Exp 5 — More rollout steps per update
+    dict(learning_rate=3e-4, gamma=0.99, gae_lambda=0.95, n_steps=4096,
+         batch_size=128, n_epochs=10, ent_coef=0.05, clip_range=0.2,
+         max_grad_norm=0.5, net_arch=[128, 128], total_timesteps=500_000),
+    # Exp 6 — Lower gamma (prioritise immediate rewards)
+    dict(learning_rate=3e-4, gamma=0.95, gae_lambda=0.95, n_steps=2048,
+         batch_size=64, n_epochs=10, ent_coef=0.05, clip_range=0.2,
+         max_grad_norm=0.5, net_arch=[128, 128], total_timesteps=500_000),
+    # Exp 7 — Moderate ent_coef, wider network
+    dict(learning_rate=5e-4, gamma=0.99, gae_lambda=0.98, n_steps=2048,
+         batch_size=64, n_epochs=10, ent_coef=0.08, clip_range=0.2,
+         max_grad_norm=0.5, net_arch=[256, 128], total_timesteps=500_000),
+    # Exp 8 — Tighter clipping, slower learning
+    dict(learning_rate=1e-4, gamma=0.99, gae_lambda=0.95, n_steps=2048,
+         batch_size=64, n_epochs=10, ent_coef=0.05, clip_range=0.1,
+         max_grad_norm=0.5, net_arch=[128, 128], total_timesteps=500_000),
+    # Exp 9 — More epochs per update
+    dict(learning_rate=3e-4, gamma=0.99, gae_lambda=0.95, n_steps=2048,
+         batch_size=64, n_epochs=20, ent_coef=0.05, clip_range=0.2,
+         max_grad_norm=0.5, net_arch=[128, 128], total_timesteps=500_000),
+    # Exp 10 — Best of above + small batch for frequent updates
+    dict(learning_rate=3e-4, gamma=0.99, gae_lambda=0.97, n_steps=2048,
+         batch_size=32, n_epochs=10, ent_coef=0.07, clip_range=0.2,
+         max_grad_norm=0.5, net_arch=[256, 256], total_timesteps=500_000),
 ]
 
 # ---------------------------------------------------------------------------

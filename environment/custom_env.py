@@ -290,15 +290,14 @@ class CPREnv(gym.Env):
 
     def _is_terminal(self) -> bool:
         p = self._patient
-        # Success: ROSC — heart rate restored is sufficient.
-        # consciousness_level is a bonus, not a requirement.
-        if p.heart_rate >= 0.85:
+        # Success: ROSC — clear threshold
+        if p.heart_rate >= 0.90:
             return True
         # Failure: prolonged inaction
-        if p.time_without_action > 15:
+        if p.time_without_action > 12:
             return True
-        # Failure: cumulative reward too negative (agent is trapped in wrong loop)
-        if self._cumulative_reward < -150:
+        # Failure: cumulative reward spiral
+        if self._cumulative_reward < -120:
             return True
         return False
 
@@ -324,7 +323,7 @@ class CPREnv(gym.Env):
         # ── Per-step living penalty — discourages stalling/looping ───────────
         # Grows linearly with steps so early exploration is tolerated but
         # long unproductive loops are costly.
-        step_penalty = -0.02 * (self._step_count / self.max_steps)
+        step_penalty = -0.01 * (self._step_count / self.max_steps)
 
         # ── Action already done this stage → penalty for repeating ───────────
         already_done = self._actions_done
@@ -399,11 +398,13 @@ class CPREnv(gym.Env):
 
         elif action == 4:  # BEGIN_CHEST_COMPRESSIONS
             if stage >= 4:
-                depth_bonus = p.hand_placement
+                depth_bonus = max(0.5, p.hand_placement)  # at least 0.5 even without reposition
                 p.compression_depth = min(1.0, 0.4 + 0.6 * depth_bonus)
                 p.compressions_delivered += 30
-                p.heart_rate = min(1.0, p.heart_rate + 0.15 * p.compression_depth * scale)
-                r = 3.0 * p.compression_depth * scale
+                # Compressions are the PRIMARY HR driver — make the effect strong and clear
+                hr_gain = 0.18 * p.compression_depth * scale
+                p.heart_rate = min(1.0, p.heart_rate + hr_gain)
+                r = 3.5 * p.compression_depth * scale
                 if stage == 4:
                     self._protocol_stage = 5
             else:
@@ -412,21 +413,25 @@ class CPREnv(gym.Env):
         elif action == 5:  # DELIVER_RESCUE_BREATHS
             if stage >= 5 and p.airway_open:
                 p.breaths_delivered += 2
-                p.chest_rise_rate = min(1.0, p.chest_rise_rate + 0.2 * scale)
-                p.heart_rate = min(1.0, p.heart_rate + 0.05 * scale)
-                r = 2.0 * scale
-            elif not p.airway_open:
+                p.chest_rise_rate = min(1.0, p.chest_rise_rate + 0.25 * scale)
+                p.heart_rate = min(1.0, p.heart_rate + 0.08 * scale)
+                r = 2.5 * scale
+            elif stage >= 5 and not p.airway_open:
                 r = -2.0  # airway closed — dangerous
             else:
                 r = -1.0  # out of order
 
         elif action == 6:  # DEFIBRILLATE
-            if p.heart_rate >= 0.80:
-                r = -1.0   # HR already high — defibrillation unnecessary
+            if p.heart_rate >= 0.85:
+                r = -1.0   # HR already near ROSC — wasteful
             elif stage >= 4 and p.compressions_delivered >= 30:
-                p.heart_rate = min(1.0, p.heart_rate + 0.3 * scale)
-                r = 4.0 * scale
+                p.heart_rate = min(1.0, p.heart_rate + 0.35 * scale)
+                r = 4.5 * scale
                 already_done.add(6)
+            elif stage >= 4:
+                # Can still shock without reposition — just smaller gain
+                p.heart_rate = min(1.0, p.heart_rate + 0.20 * scale)
+                r = 2.0 * scale
             else:
                 r = -2.0  # defibrillating without compressions
 

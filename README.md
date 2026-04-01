@@ -23,10 +23,10 @@ NoviceRL/
 │   └── rendering.py
 │   ├── unity_bridge.py        # Custom Gymnasium environment (53-dim obs, 12 discrete actions)
 │   └── rendering.py
-|                              # Pygame visualization GUI
+|                              # unity_bridge.py handles communication with Unity for visualization
 ├── training/
-│   ├── dqn_training.py      # DQN — 10 experiments, auto-resume
-│   └── pg_training.py       # REINFORCE + PPO — 10 experiments each, auto-resume
+│   ├── dqn_training.py
+│   └── pg_training.py
 ├── models/
 │   ├── dqn/                 # Saved DQN models
 │   └── pg/                  # REINFORCE & PPO models

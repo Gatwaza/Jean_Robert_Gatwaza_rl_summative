@@ -100,75 +100,75 @@ def _atomic_save(path, data):
 # Hyperparameter Grid  (10 experiments) — Focused around best found on 500k
 # ---------------------------------------------------------------------------
 DQN_EXPERIMENTS = [
-    # Exp 1 — Best baseline from prior: LR=0.01, gamma=0.95
+    # Exp 1 — Baseline with deeper network
     dict(
-        learning_rate=1e-2, gamma=0.95, batch_size=32, buffer_size=20_000,
-        exploration_fraction=0.15, exploration_final_eps=0.05,
-        learning_starts=500, train_freq=4, target_update_interval=250,
-        net_arch=[64, 64], total_timesteps=500_000,
+        learning_rate=5e-4, gamma=0.99, batch_size=64, buffer_size=50_000,
+        exploration_fraction=0.30, exploration_final_eps=0.05,
+        learning_starts=1000, train_freq=4, target_update_interval=500,
+        net_arch=[128, 128], total_timesteps=500_000,
     ),
-    # Exp 2 — Slightly smaller LR
+    # Exp 2 — Higher LR
     dict(
-        learning_rate=8e-3, gamma=0.95, batch_size=32, buffer_size=20_000,
-        exploration_fraction=0.15, exploration_final_eps=0.05,
-        learning_starts=500, train_freq=4, target_update_interval=250,
-        net_arch=[64, 64], total_timesteps=500_000,
+        learning_rate=1e-3, gamma=0.99, batch_size=64, buffer_size=50_000,
+        exploration_fraction=0.30, exploration_final_eps=0.05,
+        learning_starts=1000, train_freq=4, target_update_interval=500,
+        net_arch=[128, 128], total_timesteps=500_000,
     ),
-    # Exp 3 — Larger LR
+    # Exp 3 — Wide exploration, larger network
     dict(
-        learning_rate=1.2e-2, gamma=0.95, batch_size=32, buffer_size=20_000,
-        exploration_fraction=0.15, exploration_final_eps=0.05,
-        learning_starts=500, train_freq=4, target_update_interval=250,
-        net_arch=[64, 64], total_timesteps=500_000,
+        learning_rate=5e-4, gamma=0.99, batch_size=64, buffer_size=50_000,
+        exploration_fraction=0.40, exploration_final_eps=0.05,
+        learning_starts=1000, train_freq=4, target_update_interval=500,
+        net_arch=[256, 256], total_timesteps=500_000,
     ),
-    # Exp 4 — Gamma 0.93
+    # Exp 4 — Lower gamma (focus on short-term)
     dict(
-        learning_rate=1e-2, gamma=0.93, batch_size=32, buffer_size=20_000,
-        exploration_fraction=0.15, exploration_final_eps=0.05,
-        learning_starts=500, train_freq=4, target_update_interval=250,
-        net_arch=[64, 64], total_timesteps=500_000,
+        learning_rate=5e-4, gamma=0.95, batch_size=64, buffer_size=50_000,
+        exploration_fraction=0.30, exploration_final_eps=0.05,
+        learning_starts=1000, train_freq=4, target_update_interval=500,
+        net_arch=[128, 128], total_timesteps=500_000,
     ),
-    # Exp 5 — Gamma 0.96
+    # Exp 5 — Larger buffer for better diversity
     dict(
-        learning_rate=1e-2, gamma=0.96, batch_size=32, buffer_size=20_000,
-        exploration_fraction=0.15, exploration_final_eps=0.05,
-        learning_starts=500, train_freq=4, target_update_interval=250,
-        net_arch=[64, 64], total_timesteps=500_000,
+        learning_rate=5e-4, gamma=0.99, batch_size=64, buffer_size=100_000,
+        exploration_fraction=0.30, exploration_final_eps=0.05,
+        learning_starts=1000, train_freq=4, target_update_interval=500,
+        net_arch=[128, 128], total_timesteps=500_000,
     ),
-    # Exp 6 — Buffer 30k
+    # Exp 6 — More frequent updates
     dict(
-        learning_rate=1e-2, gamma=0.95, batch_size=32, buffer_size=30_000,
-        exploration_fraction=0.15, exploration_final_eps=0.05,
-        learning_starts=500, train_freq=4, target_update_interval=250,
-        net_arch=[64, 64], total_timesteps=500_000,
+        learning_rate=5e-4, gamma=0.99, batch_size=64, buffer_size=50_000,
+        exploration_fraction=0.30, exploration_final_eps=0.05,
+        learning_starts=1000, train_freq=1, target_update_interval=250,
+        net_arch=[128, 128], total_timesteps=500_000,
     ),
-    # Exp 7 — Buffer 10k
+    # Exp 7 — Slow target update
     dict(
-        learning_rate=1e-2, gamma=0.95, batch_size=32, buffer_size=10_000,
-        exploration_fraction=0.15, exploration_final_eps=0.05,
-        learning_starts=500, train_freq=4, target_update_interval=250,
-        net_arch=[64, 64], total_timesteps=500_000,
+        learning_rate=5e-4, gamma=0.99, batch_size=64, buffer_size=50_000,
+        exploration_fraction=0.30, exploration_final_eps=0.05,
+        learning_starts=1000, train_freq=4, target_update_interval=1000,
+        net_arch=[128, 128], total_timesteps=500_000,
     ),
-    # Exp 8 — Higher exploration: fraction 0.3, final_eps 0.1
+    # Exp 8 — Three-layer network
     dict(
-        learning_rate=1e-2, gamma=0.95, batch_size=32, buffer_size=20_000,
-        exploration_fraction=0.3, exploration_final_eps=0.1,
-        learning_starts=500, train_freq=4, target_update_interval=250,
-        net_arch=[64, 64], total_timesteps=500_000,
+        learning_rate=5e-4, gamma=0.99, batch_size=64, buffer_size=50_000,
+        exploration_fraction=0.35, exploration_final_eps=0.05,
+        learning_starts=1000, train_freq=4, target_update_interval=500,
+        net_arch=[128, 128, 64], total_timesteps=500_000,
     ),
-    # Exp 9 — Higher exploration: fraction 0.4, final_eps 0.1
+    # Exp 9 — High exploration sustained
     dict(
-        learning_rate=1e-2, gamma=0.95, batch_size=32, buffer_size=20_000,
-        exploration_fraction=0.4, exploration_final_eps=0.1,
-        learning_starts=500, train_freq=4, target_update_interval=250,
-        net_arch=[64, 64], total_timesteps=500_000,
+        learning_rate=3e-4, gamma=0.99, batch_size=64, buffer_size=50_000,
+        exploration_fraction=0.50, exploration_final_eps=0.08,
+        learning_starts=1000, train_freq=4, target_update_interval=500,
+        net_arch=[128, 128], total_timesteps=500_000,
     ),
-    # Exp 10 — Highest exploration: fraction 0.5, final_eps 0.15
+    # Exp 10 — Larger batch, more stable gradient
     dict(
-        learning_rate=1e-2, gamma=0.95, batch_size=32, buffer_size=20_000,
-        exploration_fraction=0.5, exploration_final_eps=0.15,
-        learning_starts=500, train_freq=4, target_update_interval=250,
-        net_arch=[64, 64], total_timesteps=500_000,
+        learning_rate=5e-4, gamma=0.99, batch_size=128, buffer_size=50_000,
+        exploration_fraction=0.30, exploration_final_eps=0.05,
+        learning_starts=2000, train_freq=4, target_update_interval=500,
+        net_arch=[256, 128], total_timesteps=500_000,
     ),
 ]
 

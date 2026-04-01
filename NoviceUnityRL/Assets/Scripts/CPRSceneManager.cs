@@ -98,6 +98,86 @@ public class CPRSceneManager : MonoBehaviour
 
         var canvasGo = GameObject.Find("Canvas");
         if (canvasGo != null) hud = canvasGo.GetComponent<CPR_HUD>();
+
+        // ── Auto-build live action ticker overlay ─────────────────────────────
+        // Works even when Canvas UI fields are not wired in Inspector.
+        BuildLiveActionTicker(canvasGo);
+    }
+
+    // ── Live action ticker — shows current action like the terminal ───────────
+    private UnityEngine.UI.Text _actionTicker;
+    private UnityEngine.UI.Text _stepTicker;
+    private UnityEngine.UI.Text _hrTicker;
+
+    void BuildLiveActionTicker(GameObject canvas)
+    {
+        if (canvas == null) return;
+
+        // Semi-transparent black strip across top
+        var strip = new GameObject("ActionStrip");
+        strip.transform.SetParent(canvas.transform, false);
+        var img = strip.AddComponent<UnityEngine.UI.Image>();
+        img.color = new Color(0f, 0f, 0f, 0.72f);
+        var rt = strip.GetComponent<RectTransform>();
+        rt.anchorMin = new Vector2(0f, 1f); rt.anchorMax = new Vector2(1f, 1f);
+        rt.pivot     = new Vector2(0.5f, 1f);
+        rt.sizeDelta = new Vector2(0f, 50f);
+        rt.anchoredPosition = Vector2.zero;
+
+        // Action name — large, centred
+        _actionTicker = MakeText(strip, "ActionTick",
+            new Vector2(0f, 0f), new Vector2(0.55f, 1f),
+            20, FontStyle.Bold, TextAnchor.MiddleLeft, new Vector2(12f, 0f));
+
+        // Step / episode info — right side
+        _stepTicker = MakeText(strip, "StepTick",
+            new Vector2(0.55f, 0f), new Vector2(0.78f, 1f),
+            14, FontStyle.Normal, TextAnchor.MiddleCenter, Vector2.zero);
+
+        // HR — rightmost
+        _hrTicker = MakeText(strip, "HRTick",
+            new Vector2(0.78f, 0f), new Vector2(1.0f, 1f),
+            14, FontStyle.Bold, TextAnchor.MiddleCenter, Vector2.zero);
+    }
+
+    UnityEngine.UI.Text MakeText(GameObject parent, string name,
+                                  Vector2 ancMin, Vector2 ancMax,
+                                  int size, FontStyle style, TextAnchor anchor,
+                                  Vector2 offset)
+    {
+        var go = new GameObject(name);
+        go.transform.SetParent(parent.transform, false);
+        var t = go.AddComponent<UnityEngine.UI.Text>();
+        t.font      = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        t.fontSize  = size;
+        t.fontStyle = style;
+        t.alignment = anchor;
+        t.color     = Color.white;
+        t.text      = "";
+        var rt = go.GetComponent<RectTransform>();
+        rt.anchorMin = ancMin; rt.anchorMax = ancMax;
+        rt.offsetMin = offset; rt.offsetMax = Vector2.zero;
+        rt.sizeDelta = Vector2.zero;
+        return t;
+    }
+
+    void UpdateLiveTicker(StatePacket p)
+    {
+        if (_actionTicker != null)
+            _actionTicker.text = $"  ▶  {(p.action_name ?? "").Replace("_"," ")}";
+
+        if (_stepTicker != null)
+            _stepTicker.text = $"Step {p.step}  |  Ep {p.episode}  |  "
+                             + $"R: {p.reward:+0.00;-0.00}  Total: {p.cumulative_reward:0.0}";
+
+        float hr = p.vitals?.heart_rate ?? 0f;
+        if (_hrTicker != null)
+        {
+            _hrTicker.color = hr >= 0.9f ? new Color(0.2f,0.9f,0.3f)
+                            : hr >= 0.5f ? new Color(1f,0.85f,0.1f)
+                            : new Color(0.9f,0.3f,0.3f);
+            _hrTicker.text = $"HR: {hr*100:0}%{(p.rosc ? "  ★ ROSC" : "")}";
+        }
     }
 
     // ── Outcome panel — shown at episode end ──────────────────────────────────
@@ -179,6 +259,7 @@ public class CPRSceneManager : MonoBehaviour
     // ── Event handlers ────────────────────────────────────────────────────────
     void HandleState(StatePacket p)
     {
+        UpdateLiveTicker(p);
         // CAMERA DOES NOT MOVE on actions — stays at stable position
         if (p.rosc) environment?.FlashROSC();
         else if (!p.is_correct) environment?.FlashIncorrect();

@@ -169,28 +169,59 @@ public class HumanoidPatient : MonoBehaviour
         _sittingUp = true;
         yield return new WaitForSeconds(0.6f);
 
-        Quaternion hipsStart = _body.hips.localRotation;
+        Quaternion hipsStart  = _body.hips.localRotation;
+        // 22° = roughly seated-upright when built from supine 90° start
         Quaternion hipsSeated = Quaternion.Euler(22f, 0f, 0f);
-        Vector3 hipsPosStart = _body.hips.localPosition;
+        Vector3 hipsPosStart  = _body.hips.localPosition;
+
+        // The feet need to stay on the floor (y≈0) as the body rises.
+        // We interpolate hips upward AND compensate foot Z so toes don't clip.
+        // In the supine rig the feet are at the -Z end of the body.
+        // As the torso rises, the feet slide slightly forward (toward +Z) to
+        // maintain ground contact — same as a person pushing their heels in.
+        Quaternion footStart   = _body.leftFoot.localRotation;   // right mirrors this
+        Quaternion footGrounded = Quaternion.Euler(-60f, 0f, 0f); // toes push into floor
+
         float t = 0f;
         while (t < 1f)
         {
-            t += Time.deltaTime * 0.35f;
-            float s = Mathf.SmoothStep(0,1,t);
+            t += Time.deltaTime * 0.32f;
+            float s = Mathf.SmoothStep(0, 1, t);
+
             _body.hips.localRotation = Quaternion.Slerp(hipsStart, hipsSeated, s);
-            _body.hips.localPosition = Vector3.Lerp(hipsPosStart, new Vector3(0f,0.52f,0f), s);
+            // Rise from 0.05 to 0.48 — stays well above floor surface
+            _body.hips.localPosition = Vector3.Lerp(hipsPosStart, new Vector3(0f, 0.48f, 0f), s);
+
+            // Bend knees as body rises — keeps feet anchored visually
+            _body.leftThigh.localEulerAngles  = new Vector3(0f, 0f,  8f + s*30f);
+            _body.rightThigh.localEulerAngles = new Vector3(0f, 0f, -8f - s*30f);
+            _body.leftShin.localEulerAngles   = new Vector3(0f, 0f, -s*40f);
+            _body.rightShin.localEulerAngles  = new Vector3(0f, 0f,  s*40f);
+
+            // Feet stay flat — rotate toward floor-facing as knees bend
+            _body.leftFoot.localRotation  = Quaternion.Slerp(footStart, footGrounded, s);
+            _body.rightFoot.localRotation = Quaternion.Slerp(footStart, footGrounded, s);
+
+            // World height guard: clamp entire root above y=0
+            Vector3 rp = transform.position;
+            if (rp.y < 0.10f) transform.position = new Vector3(rp.x, 0.10f, rp.z);
+
             yield return null;
         }
+
+        // Head bobs — regaining consciousness
         t = 0f;
         while (t < 1f)
         {
-            t += Time.deltaTime * 1.0f;
+            t += Time.deltaTime * 0.9f;
             float nod = Mathf.Sin(t * Mathf.PI * 1.5f) * 10f;
             if (_body?.head != null) _body.head.localEulerAngles = new Vector3(nod, nod*0.2f, 0);
             yield return null;
         }
-        if (_body?.leftUpperArm  != null) _body.leftUpperArm.localEulerAngles  = new Vector3(-18f,0f,-12f);
-        if (_body?.rightUpperArm != null) _body.rightUpperArm.localEulerAngles = new Vector3(-18f,0f, 12f);
+
+        // Arms reach slightly forward — natural recovery posture
+        if (_body?.leftUpperArm  != null) _body.leftUpperArm.localEulerAngles  = new Vector3(-15f,0f,-10f);
+        if (_body?.rightUpperArm != null) _body.rightUpperArm.localEulerAngles = new Vector3(-15f,0f, 10f);
     }
 
     IEnumerator ChestRiseTwice()
