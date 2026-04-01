@@ -20,6 +20,3 @@ data/extracted/
 *.pkg
 *.dylib
 *.so
-
-# Demo artifacts
-demo.gif
