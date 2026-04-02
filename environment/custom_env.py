@@ -32,7 +32,6 @@ New in v4 (beyond v3):
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional, Tuple, Dict, Any, List, Deque
@@ -151,7 +150,7 @@ class CPREnv(gym.Env):
             self._breath_hr_gain   = 0.02
         else:  # medium
             self._diff_scale       = 1.0
-            self._hr_decay         = 0.010   # ↑ from 0.008 — passive strategies fail faster
+            self._hr_decay         = 0.008
             self._rosc_threshold   = 0.90
             self._comp_depth_base  = 0.45
             self._sustain_required = 2
@@ -170,7 +169,7 @@ class CPREnv(gym.Env):
         self._last_action       = -1
         self._consecutive_count = 0
         self._recent_actions:   deque = deque(maxlen=10)
-        self._last_comp_time    = 0.0
+        self._last_comp_step:   int   = 0   # step-count rhythm (replaces wall-clock)
         self._comp_intervals:   list  = []
         self._comp_streak       = 0
         self._rosc_steps        = 0
@@ -320,25 +319,27 @@ class CPREnv(gym.Env):
                 streak_mult = min(1.0 + 0.08 * (self._comp_streak - 1), 1.5)
                 hr_gain = self._comp_hr_gain * depth * scale * streak_mult
                 p.heart_rate = min(1.0, p.heart_rate + hr_gain)
-                # Stage 5+ streak bonus: incentivise sustained compressions mid-episode
-                if stage >= 5 and self._comp_streak >= 2:
-                    r += 4.5 * depth * scale * streak_mult   # scales up to ~6.75 at max streak
-                else:
-                    r += 3.5 * depth * scale
+                r += 3.5 * depth * scale
 
-                # Compression rate bonus (100-120 bpm)
-                now = time.perf_counter()
-                if self._last_comp_time > 0:
-                    interval = now - self._last_comp_time
-                    bpm_est  = 60.0 / max(interval, 0.01)
-                    self._comp_intervals.append(bpm_est)
+                # Compression rhythm bonus: reward consistent step-spacing.
+                # In a 200-step episode representing ~2 min of CPR, each step
+                # maps to ≈ 0.6 s.  30 compressions at 100 bpm → ~18 s → ≈ 30
+                # steps.  One action per call means a "good rhythm" is 1 step
+                # between consecutive BEGIN_CHEST_COMPRESSIONS calls.
+                # We score by step-gap to the previous compression:
+                #   gap == 1  → ideal (100-120 bpm equivalent)  +1.0
+                #   gap == 2  → acceptable                       +0.4
+                #   other     → too fast / too slow              −0.5
+                if self._last_comp_step > 0:
+                    step_gap = self._step_count - self._last_comp_step
+                    self._comp_intervals.append(step_gap)
                     if len(self._comp_intervals) > 5:
                         self._comp_intervals.pop(0)
-                    avg_bpm = float(np.mean(self._comp_intervals))
-                    if   100 <= avg_bpm <= 120: r += 1.0 * scale
-                    elif  90 <= avg_bpm <= 130: r += 0.4 * scale
-                    else:                        r -= 0.5
-                self._last_comp_time = now
+                    avg_gap = float(np.mean(self._comp_intervals))
+                    if   avg_gap <= 1.5: r += 1.0 * scale
+                    elif avg_gap <= 2.5: r += 0.4 * scale
+                    else:                r -= 0.5
+                self._last_comp_step = self._step_count
 
                 if stage == 4:
                     self._protocol_stage = 5
@@ -389,8 +390,10 @@ class CPREnv(gym.Env):
             r -= 0.5 * (1.0 + p.time_without_action * 0.15)
 
         # ── ROSC terminal bonus ────────────────────────────────────────────────
+        # Reduced from 20.0 → 8.0 and clip tightened to [-3, 10] to keep the
+        # Q-value range compact and prevent DQN overestimation of rare bonuses.
         if p.heart_rate >= self._rosc_threshold and p.consciousness_level >= 0.7:
-            r += 20.0
+            r += 8.0
 
         # ── HR decay when not actively treating ───────────────────────────────
         if action not in (4, 5, 6):
@@ -402,7 +405,7 @@ class CPREnv(gym.Env):
         r += self._diversity_bonus()
 
         self._update_landmarks(action)
-        return float(np.clip(r, -6.0, 22.0))
+        return float(np.clip(r, -3.0, 10.0))
 
     def _diversity_bonus(self) -> float:
         """Reward for using varied actions in the last 10 steps."""

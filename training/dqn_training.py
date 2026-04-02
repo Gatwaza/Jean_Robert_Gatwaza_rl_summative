@@ -85,64 +85,65 @@ DQN_DIFFICULTY = {
 # Hyperparameter Grid (10 experiments) — higher exploration
 # ---------------------------------------------------------------------------
 DQN_EXPERIMENTS = [
-    # Exp 1 — Baseline, easy, long exploration
+    # Exp 1 — Baseline, easy. target_update_interval raised (was 500 → 1000)
+    # because with n_envs=1 each "interval" is a real step, not 4× inflated.
     dict(learning_rate=5e-4, gamma=0.99, batch_size=64, buffer_size=50_000,
          exploration_fraction=0.45, exploration_final_eps=0.05,
-         learning_starts=2000, train_freq=4, target_update_interval=500,
+         learning_starts=1000, train_freq=4, target_update_interval=1000,
          net_arch=[128, 128], total_timesteps=750_000),
 
     # Exp 2 — Higher LR, easy
     dict(learning_rate=1e-3, gamma=0.99, batch_size=64, buffer_size=50_000,
          exploration_fraction=0.50, exploration_final_eps=0.05,
-         learning_starts=2000, train_freq=4, target_update_interval=500,
+         learning_starts=1000, train_freq=4, target_update_interval=1000,
          net_arch=[128, 128], total_timesteps=750_000),
 
     # Exp 3 — Wide exploration, larger net, easy
     dict(learning_rate=5e-4, gamma=0.99, batch_size=64, buffer_size=50_000,
          exploration_fraction=0.55, exploration_final_eps=0.08,
-         learning_starts=2000, train_freq=4, target_update_interval=500,
+         learning_starts=1000, train_freq=4, target_update_interval=1000,
          net_arch=[256, 256], total_timesteps=750_000),
 
-    # Exp 4 — Medium, lower gamma, deep exploration
+    # Exp 4 — Medium, lower gamma
     dict(learning_rate=5e-4, gamma=0.95, batch_size=64, buffer_size=50_000,
          exploration_fraction=0.45, exploration_final_eps=0.05,
-         learning_starts=2000, train_freq=4, target_update_interval=500,
+         learning_starts=1000, train_freq=4, target_update_interval=1000,
          net_arch=[128, 128], total_timesteps=750_000),
 
-    # Exp 5 — Larger buffer for diversity, medium
+    # Exp 5 — Larger buffer, medium
     dict(learning_rate=5e-4, gamma=0.99, batch_size=64, buffer_size=100_000,
          exploration_fraction=0.45, exploration_final_eps=0.05,
-         learning_starts=2000, train_freq=4, target_update_interval=500,
+         learning_starts=1000, train_freq=4, target_update_interval=1000,
          net_arch=[128, 128], total_timesteps=750_000),
 
-    # Exp 6 — More frequent updates, medium
+    # Exp 6 — More frequent Q updates, medium
     dict(learning_rate=5e-4, gamma=0.99, batch_size=64, buffer_size=50_000,
          exploration_fraction=0.45, exploration_final_eps=0.05,
-         learning_starts=2000, train_freq=1, target_update_interval=250,
+         learning_starts=1000, train_freq=1, target_update_interval=500,
          net_arch=[128, 128], total_timesteps=750_000),
 
     # Exp 7 — Slow target update, medium
     dict(learning_rate=5e-4, gamma=0.99, batch_size=64, buffer_size=50_000,
          exploration_fraction=0.45, exploration_final_eps=0.05,
-         learning_starts=2000, train_freq=4, target_update_interval=1000,
+         learning_starts=1000, train_freq=4, target_update_interval=2000,
          net_arch=[128, 128], total_timesteps=750_000),
 
     # Exp 8 — Hard curriculum, three-layer net
     dict(learning_rate=5e-4, gamma=0.99, batch_size=64, buffer_size=50_000,
          exploration_fraction=0.50, exploration_final_eps=0.08,
-         learning_starts=2000, train_freq=4, target_update_interval=500,
+         learning_starts=1000, train_freq=4, target_update_interval=1000,
          net_arch=[128, 128, 64], total_timesteps=750_000),
 
     # Exp 9 — Hard, sustained high epsilon floor
     dict(learning_rate=3e-4, gamma=0.99, batch_size=64, buffer_size=50_000,
          exploration_fraction=0.60, exploration_final_eps=0.10,
-         learning_starts=2000, train_freq=4, target_update_interval=500,
+         learning_starts=1000, train_freq=4, target_update_interval=1000,
          net_arch=[128, 128], total_timesteps=750_000),
 
     # Exp 10 — Hard, large batch, stable gradient
     dict(learning_rate=5e-4, gamma=0.99, batch_size=128, buffer_size=100_000,
          exploration_fraction=0.50, exploration_final_eps=0.08,
-         learning_starts=4000, train_freq=4, target_update_interval=500,
+         learning_starts=2000, train_freq=4, target_update_interval=1000,
          net_arch=[256, 128], total_timesteps=750_000),
 ]
 
@@ -242,7 +243,12 @@ def train_dqn():
         policy_kwargs = dict(net_arch=net_arch)
 
         try:
-            vec_env     = make_vec_env(make_env(difficulty), n_envs=4)
+            # DQN is an off-policy algorithm designed for a single environment.
+            # SB3 technically accepts n_envs > 1 but target_update_interval and
+            # train_freq are counted in *steps per env*, so with 4 envs the
+            # effective update rate is 4× faster and Q-values diverge.
+            # n_envs=1 is correct and stable for DQN.
+            vec_env     = make_vec_env(make_env(difficulty), n_envs=1)
             reward_cb   = RewardLoggerCallback()
             collapse_cb = CollapseDetectorCallback()
             ckpt_cb     = CheckpointCallback(

@@ -23,20 +23,22 @@ public class HumanoidPatient : MonoBehaviour
     private bool  _sittingUp   = false;
     private float _breathCycle = 0f;
 
+    // Supine patient: the hips are rotated 90° on X, so _body.chest.position
+    // points *above* the patient rather than at sternum height above the floor.
+    // We compute the IK target directly from the root transform instead.
     public Vector3 ChestWorldPosition =>
-        _body?.chest != null ? _body.chest.position
-                             : transform.position + Vector3.up * 0.22f;
+        transform.position + new Vector3(0f, 0.22f, 0.10f);
 
     void Awake()
     {
         transform.rotation = Quaternion.identity;
-        transform.position = new Vector3(transform.position.x, 0.14f, transform.position.z);
+        transform.position = new Vector3(transform.position.x, 0.19f, transform.position.z);
 
         _body = HumanoidBuilder.Build(transform, skinColor, shirtColor, trouserColor, 1f);
 
         // Supine: hips rotated so body lies along Z axis
         _body.hips.localEulerAngles = new Vector3(90f, 0f, 0f);
-        _body.hips.localPosition    = new Vector3(0f, 0.05f, 0f);
+        _body.hips.localPosition = new Vector3(0f, 0.08f, 0f);
 
         // Arms rest at sides, flat
         _body.leftUpperArm.localEulerAngles  = new Vector3(0f, 0f, -20f);
@@ -144,22 +146,23 @@ public class HumanoidPatient : MonoBehaviour
         }
     }
 
-    // FIX: Recovery position is a gentle upper-body tilt — torso rolls ~30°,
-    // top knee bends slightly. The body does NOT spin or roll fully.
+    // FIX: Roll hips ~35° on Z to tilt the supine patient onto their side.
+    // Rotating the spine on Z with hips at 90° X just twisted the torso
+    // in the wrong axis — rolling from the root (hips) is correct.
     IEnumerator GentleRecoveryTilt()
     {
         _inRecovery = true;
-        Quaternion spineStart = _body.spine.localRotation;
-        Quaternion spineTilt  = spineStart * Quaternion.Euler(0f, 0f, 28f);
+        Quaternion hipsStart  = _body.hips.localRotation;
+        Quaternion hipsTilted = Quaternion.Euler(90f, 0f, 35f);
         Quaternion kneeStart  = _body.leftShin.localRotation;
         Quaternion kneeBend   = Quaternion.Euler(0f, 0f, -22f);
         float t = 0f;
         while (t < 1f)
         {
             t += Time.deltaTime * 0.7f;
-            float s = Mathf.SmoothStep(0,1,t);
-            _body.spine.localRotation    = Quaternion.Slerp(spineStart, spineTilt, s);
-            _body.leftShin.localRotation = Quaternion.Slerp(kneeStart,  kneeBend,  s);
+            float s = Mathf.SmoothStep(0, 1, t);
+            _body.hips.localRotation     = Quaternion.Slerp(hipsStart, hipsTilted, s);
+            _body.leftShin.localRotation = Quaternion.Slerp(kneeStart, kneeBend,   s);
             yield return null;
         }
     }
@@ -251,14 +254,14 @@ public class HumanoidPatient : MonoBehaviour
         _headTiltTgt = 0f; _breathCycle = 0f;
 
         float t = 0f;
-        Quaternion hipsStart  = _body.hips.rotation;
+        Quaternion hipsStart  = _body.hips.localRotation;
         Quaternion hipsSupine = Quaternion.Euler(90f, 0f, 0f);
         Vector3 hipsPosStart  = _body.hips.localPosition;
         while (t < 1f)
         {
             t += Time.deltaTime * 1.4f;
             float s = Mathf.SmoothStep(0,1,t);
-            _body.hips.rotation      = Quaternion.Slerp(hipsStart, hipsSupine, s);
+            _body.hips.localRotation = Quaternion.Slerp(hipsStart, hipsSupine, s);
             _body.hips.localPosition = Vector3.Lerp(hipsPosStart, new Vector3(0f,0.05f,0f), s);
             yield return null;
         }

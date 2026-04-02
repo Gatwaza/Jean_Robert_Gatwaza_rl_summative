@@ -13,6 +13,7 @@ Usage (unchanged from v1):
     python main.py --random
     python main.py --demo
     python main.py --demo --algo ppo
+    python main.py --demo --algo ppo --exp 4
     python main.py --train --algo dqn
     python main.py --demo --no-bridge
     python main.py --demo --episodes 5
@@ -94,7 +95,7 @@ def _collapse_diagnosis(counts: dict, total_steps: int) -> str:
 # Model loading
 # ---------------------------------------------------------------------------
 
-def load_best_model(algo: str):
+def load_best_model(algo: str, force_exp: int = None):
     result_map = {
         "dqn":      "results/dqn_results.json",
         "ppo":      "results/ppo_results.json",
@@ -112,17 +113,31 @@ def load_best_model(algo: str):
     if not valid:
         raise ValueError(f"No successful {algo} experiments.")
 
-    # Prefer models with few collapse events
-    def score(r):
-        n_collapse = len(r.get("collapse_events", []))
-        return r.get("mean_reward_last50", -999) - n_collapse * 5
+    # If a specific experiment is requested, use it directly
+    if force_exp is not None:
+        match = [r for r in valid if r["exp"] == force_exp]
+        if not match:
+            available = [r["exp"] for r in valid]
+            raise ValueError(
+                f"Experiment {force_exp} not found in {algo} results. "
+                f"Available: {available}"
+            )
+        best = match[0]
+        log.info(f"Using forced exp {force_exp} (--exp flag)")
+    else:
+        # ROSC rate dominates — then mean reward, then penalise collapse
+        def score(r):
+            n_collapse = len(r.get("collapse_events", []))
+            rosc_bonus = r.get("rosc_rate", 0.0) * 300
+            return r.get("mean_reward_last50", -999) + rosc_bonus - n_collapse * 5
+        best = max(valid, key=score)
 
-    best    = max(valid, key=score)
     exp_num = best["exp"]
     log.info(
         f"Best {algo.upper()} → Exp {exp_num}  "
         f"mean={best.get('mean_reward_last50', 0):.2f}  "
         f"max={best.get('max_reward', 0):.2f}  "
+        f"rosc_rate={best.get('rosc_rate', 'n/a')}  "
         f"collapse_events={len(best.get('collapse_events', []))}"
     )
 
@@ -210,9 +225,9 @@ def run_random_agent(bridge, episodes: int, use_mediapipe: bool, video_path=None
 # ---------------------------------------------------------------------------
 
 def run_demo(bridge, algo: str, episodes: int, use_mediapipe: bool,
-             video_path=None, difficulty: str = "medium"):
+             video_path=None, difficulty: str = "medium", force_exp: int = None):
     log.info(f"PHASE: DEMO — Best {algo.upper()} [{difficulty}]")
-    model, model_type, exp_num = load_best_model(algo)
+    model, model_type, exp_num = load_best_model(algo, force_exp=force_exp)
     bridge.send_state(build_phase_change_packet("demo", algo.upper(), exp_num))
     lm_gen     = get_landmark_stream(use_mediapipe, video_path)
     env        = CPREnv(max_steps=200, difficulty=difficulty)
@@ -332,6 +347,8 @@ def main():
     parser.add_argument("--train",      action="store_true")
     parser.add_argument("--algo",       choices=["dqn","ppo","reinforce","auto","all"],
                                         default="auto")
+    parser.add_argument("--exp",        type=int, default=None,
+                                        help="Force a specific experiment number (e.g. --exp 4)")
     parser.add_argument("--episodes",   type=int,  default=3)
     parser.add_argument("--difficulty", choices=["easy","medium","hard"],
                                         default="medium")
@@ -356,7 +373,7 @@ def main():
     use_mp = args.mediapipe or (args.video is not None)
     algo   = args.algo
 
-    # Auto-select: prefer models with low collapse_events
+    # Auto-select: ROSC rate dominates, then mean reward, then penalise collapse
     if algo == "auto" and not args.random and not args.train:
         best_algo, best_score = "ppo", -999
         for a in ["dqn", "ppo", "reinforce"]:
@@ -368,7 +385,9 @@ def main():
                     valid = [r for r in res if "error" not in r]
                     if valid:
                         scores = [
-                            r.get("mean_reward_last50", -999) - 5 * len(r.get("collapse_events", []))
+                            r.get("mean_reward_last50", -999)
+                            + r.get("rosc_rate", 0.0) * 300
+                            - 5 * len(r.get("collapse_events", []))
                             for r in valid
                         ]
                         s = max(scores)
@@ -385,14 +404,14 @@ def main():
         elif args.train:
             run_training_with_unity(bridge, algo if algo != "auto" else "all")
         else:
-            run_demo(bridge, algo, args.episodes, use_mp, args.video, args.difficulty)
+            run_demo(bridge, algo, args.episodes, use_mp, args.video,
+                     args.difficulty, force_exp=args.exp)
 
     except KeyboardInterrupt:
         log.info("Interrupted by user.")
     except FileNotFoundError as e:
         log.error(str(e))
     finally:
-        # Suppress threading errors on clean exit
         try:
             bridge.stop()
         except Exception:

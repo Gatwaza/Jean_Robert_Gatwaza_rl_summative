@@ -467,14 +467,20 @@ def reinforce_train_single(params: dict, exp_idx: int, save_dir: str) -> dict:
             ep_mean = float(returns_t.mean())
             baseline = 0.95 * baseline + 0.05 * ep_mean
             advantages = returns_t - baseline
-        else:
-            advantages = returns_t
-
-        # Normalise advantages
-        if len(advantages) > 1:
+            # Scale only — do NOT re-centre.  The baseline already removed the
+            # mean; subtracting the mean a second time (inside a full
+            # normalisation) cancels the baseline and collapses the gradient
+            # signal, keeping entropy pinned at ln(12) ≈ 2.485 forever.
             adv_std = advantages.std()
             if adv_std > 1e-8:
-                advantages = (advantages - advantages.mean()) / (adv_std + 1e-8)
+                advantages = advantages / (adv_std + 1e-8)
+        else:
+            advantages = returns_t
+            # No baseline → full normalisation is fine (mean-shift + scale)
+            if len(advantages) > 1:
+                adv_std = advantages.std()
+                if adv_std > 1e-8:
+                    advantages = (advantages - advantages.mean()) / (adv_std + 1e-8)
 
         policy_loss  = -(logprobs_t * advantages.detach()).mean()
         entropy_bonus = -entropy_coef * entropies_t.mean()
