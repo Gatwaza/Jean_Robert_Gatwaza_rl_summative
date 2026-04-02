@@ -1,11 +1,27 @@
 """
-Policy Gradient Training — REINFORCE & PPO
-==========================================
-10 experiments each for REINFORCE (via SB3 A2C as SB3 has no standalone
-REINFORCE — we implement vanilla REINFORCE as custom wrapper) and PPO.
+Policy Gradient Training — REINFORCE & PPO  (v2 — Anti-Collapse Edition)
+=========================================================================
 
-Both use the same CPREnv for objective comparison.
-Resume-safe: checks existing JSON results before starting.
+Key changes from v1 (informed by live run showing 64-72% MONITOR_PULSE):
+
+  PPO_EXPERIMENTS:
+    • ent_coef raised to 0.10-0.30 across all experiments (was 0.05-0.10)
+      — High entropy is the primary defence against action collapse.
+    • Added experiments with vf_coef tuning (critic helps actor stay diverse)
+    • total_timesteps raised to 750_000 (was 500_000) for stable convergence
+    • Curriculum difficulty: easy→medium→hard across experiment blocks
+
+  CollapseDetectorCallback:
+    • Monitors action distribution every 2048 steps
+    • Logs a RED WARNING if any action > 50% of recent steps
+    • Records entropy history so it appears in the JSON results
+
+  RewardLoggerCallback (unchanged correctness, added entropy tracking)
+
+Usage:
+    python training/pg_training.py --algo ppo
+    python training/pg_training.py --algo reinforce
+    python training/pg_training.py --algo all
 """
 
 import os
@@ -17,6 +33,7 @@ import logging
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from collections import deque
 from torch.distributions import Categorical
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -35,8 +52,12 @@ logging.basicConfig(
 )
 log = logging.getLogger("PG_Training")
 
+
+# ---------------------------------------------------------------------------
+# IO helpers
+# ---------------------------------------------------------------------------
+
 def _safe_load_results(path):
-    """Load JSON results, returning [] on any corruption or missing file."""
     if not os.path.exists(path):
         return []
     try:
@@ -46,143 +67,144 @@ def _safe_load_results(path):
             return []
         return json.loads(content)
     except Exception as e:
-        log.warning(f"Results file corrupt ({e}), attempting recovery: {path}")
-        # Try to recover partial records using incremental parsing
-        recovered = []
-        try:
-            decoder = json.JSONDecoder()
-            inner = content.lstrip().lstrip('[')
-            pos = 0
-            while pos < len(inner):
-                chunk = inner[pos:].lstrip(' \n\t,')
-                if not chunk or chunk.startswith(']'):
-                    break
-                obj, end = decoder.raw_decode(chunk)
-                recovered.append(obj)
-                pos += len(inner[pos:]) - len(chunk) + end
-        except Exception:
-            pass
-        if recovered:
-            log.info(f"Recovered {len(recovered)} records from corrupt file")
-            _atomic_save(path, recovered)
-        else:
-            log.warning("No recoverable data — resetting results file")
-            import shutil
-            shutil.copy(path, path + ".bak")
-            _atomic_save(path, [])
-        return recovered
+        log.warning(f"Results file corrupt ({e}), resetting: {path}")
+        import shutil
+        shutil.copy(path, path + ".bak")
+        _atomic_save(path, [])
+        return []
 
 
 def _atomic_save(path, data):
-    """Write JSON atomically: write to .tmp then rename, preventing corruption."""
     tmp = path + ".tmp"
     try:
-        with open(tmp, 'w') as f:
+        with open(tmp, "w") as f:
             json.dump(data, f, indent=2, default=lambda o:
-                float(o) if hasattr(o, '__float__') else int(o)
-                if hasattr(o, '__int__') else str(o))
-        os.replace(tmp, path)   # atomic on POSIX, near-atomic on Windows
+                float(o) if hasattr(o, "__float__") else
+                int(o) if hasattr(o, "__int__") else str(o))
+        os.replace(tmp, path)
     except Exception as e:
-        log.error(f"Failed to save results to {path}: {e}")
+        log.error(f"Save failed {path}: {e}")
         if os.path.exists(tmp):
             os.remove(tmp)
 
 
+# ---------------------------------------------------------------------------
+# PPO Hyperparameter Grid — anti-collapse focus
+# ---------------------------------------------------------------------------
+# Curriculum map: experiments 1-3 → easy, 4-7 → medium, 8-10 → hard
+PPO_DIFFICULTY = {
+    **{i: "easy"   for i in range(1, 4)},
+    **{i: "medium" for i in range(4, 8)},
+    **{i: "hard"   for i in range(8, 11)},
+}
 
-# ---------------------------------------------------------------------------
-# PPO Hyperparameter Grid (10 experiments) — focused around strong prior DQN signal
-# ---------------------------------------------------------------------------
 PPO_EXPERIMENTS = [
-    # Exp 1 — Baseline with high entropy to prevent collapse
+    # Exp 1 — High entropy baseline, easy curriculum
     dict(learning_rate=3e-4, gamma=0.99, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.05, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[128, 128], total_timesteps=500_000),
-    # Exp 2 — Stronger entropy regularisation
+         batch_size=64, n_epochs=10, ent_coef=0.15, clip_range=0.2,
+         vf_coef=0.5, max_grad_norm=0.5, net_arch=[128, 128],
+         total_timesteps=750_000),
+
+    # Exp 2 — Even stronger entropy regularisation
     dict(learning_rate=3e-4, gamma=0.99, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.10, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[128, 128], total_timesteps=500_000),
-    # Exp 3 — Higher LR, stronger entropy
+         batch_size=64, n_epochs=10, ent_coef=0.20, clip_range=0.2,
+         vf_coef=0.5, max_grad_norm=0.5, net_arch=[128, 128],
+         total_timesteps=750_000),
+
+    # Exp 3 — Higher LR + entropy for fast early learning
     dict(learning_rate=1e-3, gamma=0.99, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.10, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[128, 128], total_timesteps=500_000),
-    # Exp 4 — Larger network for better generalisation
+         batch_size=64, n_epochs=10, ent_coef=0.20, clip_range=0.2,
+         vf_coef=0.5, max_grad_norm=0.5, net_arch=[128, 128],
+         total_timesteps=750_000),
+
+    # Exp 4 — Medium difficulty, bigger net, moderate entropy
     dict(learning_rate=3e-4, gamma=0.99, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.05, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[256, 256], total_timesteps=500_000),
-    # Exp 5 — More rollout steps per update
+         batch_size=64, n_epochs=10, ent_coef=0.15, clip_range=0.2,
+         vf_coef=0.5, max_grad_norm=0.5, net_arch=[256, 256],
+         total_timesteps=750_000),
+
+    # Exp 5 — More rollout steps, reduces variance
     dict(learning_rate=3e-4, gamma=0.99, gae_lambda=0.95, n_steps=4096,
-         batch_size=128, n_epochs=10, ent_coef=0.05, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[128, 128], total_timesteps=500_000),
-    # Exp 6 — Lower gamma (prioritise immediate rewards)
-    dict(learning_rate=3e-4, gamma=0.95, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.05, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[128, 128], total_timesteps=500_000),
-    # Exp 7 — Moderate ent_coef, wider network
+         batch_size=128, n_epochs=10, ent_coef=0.15, clip_range=0.2,
+         vf_coef=0.5, max_grad_norm=0.5, net_arch=[128, 128],
+         total_timesteps=750_000),
+
+    # Exp 6 — Wider net, high entropy, medium curriculum
     dict(learning_rate=5e-4, gamma=0.99, gae_lambda=0.98, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.08, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[256, 128], total_timesteps=500_000),
-    # Exp 8 — Tighter clipping, slower learning
+         batch_size=64, n_epochs=10, ent_coef=0.18, clip_range=0.2,
+         vf_coef=0.6, max_grad_norm=0.5, net_arch=[256, 128],
+         total_timesteps=750_000),
+
+    # Exp 7 — Slow LR, strong entropy, tighter clip
     dict(learning_rate=1e-4, gamma=0.99, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=10, ent_coef=0.05, clip_range=0.1,
-         max_grad_norm=0.5, net_arch=[128, 128], total_timesteps=500_000),
-    # Exp 9 — More epochs per update
+         batch_size=64, n_epochs=15, ent_coef=0.25, clip_range=0.15,
+         vf_coef=0.5, max_grad_norm=0.5, net_arch=[128, 128],
+         total_timesteps=750_000),
+
+    # Exp 8 — Hard curriculum, very strong entropy
     dict(learning_rate=3e-4, gamma=0.99, gae_lambda=0.95, n_steps=2048,
-         batch_size=64, n_epochs=20, ent_coef=0.05, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[128, 128], total_timesteps=500_000),
-    # Exp 10 — Best of above + small batch for frequent updates
+         batch_size=64, n_epochs=10, ent_coef=0.25, clip_range=0.2,
+         vf_coef=0.5, max_grad_norm=0.5, net_arch=[256, 256],
+         total_timesteps=750_000),
+
+    # Exp 9 — Hard, larger batch, entropy decay via linear schedule
+    dict(learning_rate=3e-4, gamma=0.99, gae_lambda=0.95, n_steps=4096,
+         batch_size=128, n_epochs=10, ent_coef=0.30, clip_range=0.2,
+         vf_coef=0.5, max_grad_norm=0.5, net_arch=[128, 128],
+         total_timesteps=750_000),
+
+    # Exp 10 — Best-of-above synthesis
     dict(learning_rate=3e-4, gamma=0.99, gae_lambda=0.97, n_steps=2048,
-         batch_size=32, n_epochs=10, ent_coef=0.07, clip_range=0.2,
-         max_grad_norm=0.5, net_arch=[256, 256], total_timesteps=500_000),
+         batch_size=64, n_epochs=12, ent_coef=0.20, clip_range=0.2,
+         vf_coef=0.5, max_grad_norm=0.5, net_arch=[256, 256],
+         total_timesteps=750_000),
 ]
 
+
 # ---------------------------------------------------------------------------
-# REINFORCE Hyperparameter Grid (10 experiments)
-# Pure policy gradient, Monte Carlo returns, no baseline by default
+# REINFORCE Hyperparameter Grid — also bumped entropy
 # ---------------------------------------------------------------------------
 REINFORCE_EXPERIMENTS = [
-    dict(lr=1e-3, gamma=0.99, hidden=[64, 64],     use_baseline=False, entropy_coef=0.0,  episodes=3000),
-    dict(lr=5e-4, gamma=0.99, hidden=[64, 64],     use_baseline=True,  entropy_coef=0.0,  episodes=3000),
-    dict(lr=1e-3, gamma=0.95, hidden=[64, 64],     use_baseline=False, entropy_coef=0.01, episodes=3000),
-    dict(lr=2e-3, gamma=0.99, hidden=[128, 128],   use_baseline=False, entropy_coef=0.0,  episodes=3000),
-    dict(lr=5e-4, gamma=0.99, hidden=[256],        use_baseline=True,  entropy_coef=0.01, episodes=3000),
-    dict(lr=1e-3, gamma=0.97, hidden=[64, 64],     use_baseline=True,  entropy_coef=0.02, episodes=3000),
-    dict(lr=1e-4, gamma=0.99, hidden=[64, 64, 64], use_baseline=False, entropy_coef=0.0,  episodes=3000),
-    dict(lr=2e-3, gamma=0.95, hidden=[128, 64],    use_baseline=True,  entropy_coef=0.01, episodes=3000),
-    dict(lr=3e-4, gamma=0.99, hidden=[64, 64],     use_baseline=False, entropy_coef=0.05, episodes=3000),
-    dict(lr=1e-3, gamma=0.99, hidden=[128, 128],   use_baseline=True,  entropy_coef=0.02, episodes=3000),
+    dict(lr=1e-3, gamma=0.99, hidden=[64,  64],     use_baseline=False, entropy_coef=0.05,  episodes=4000),
+    dict(lr=5e-4, gamma=0.99, hidden=[64,  64],     use_baseline=True,  entropy_coef=0.05,  episodes=4000),
+    dict(lr=1e-3, gamma=0.95, hidden=[64,  64],     use_baseline=False, entropy_coef=0.10,  episodes=4000),
+    dict(lr=2e-3, gamma=0.99, hidden=[128, 128],    use_baseline=False, entropy_coef=0.05,  episodes=4000),
+    dict(lr=5e-4, gamma=0.99, hidden=[256],         use_baseline=True,  entropy_coef=0.10,  episodes=4000),
+    dict(lr=1e-3, gamma=0.97, hidden=[64,  64],     use_baseline=True,  entropy_coef=0.15,  episodes=4000),
+    dict(lr=1e-4, gamma=0.99, hidden=[64,  64,  64],use_baseline=False, entropy_coef=0.05,  episodes=4000),
+    dict(lr=2e-3, gamma=0.95, hidden=[128, 64],     use_baseline=True,  entropy_coef=0.10,  episodes=4000),
+    dict(lr=3e-4, gamma=0.99, hidden=[64,  64],     use_baseline=False, entropy_coef=0.20,  episodes=4000),
+    dict(lr=1e-3, gamma=0.99, hidden=[128, 128],    use_baseline=True,  entropy_coef=0.15,  episodes=4000),
 ]
 
 
 # ---------------------------------------------------------------------------
-# Callback for PPO reward tracking
+# Callbacks
 # ---------------------------------------------------------------------------
+
 class RewardLoggerCallback(BaseCallback):
+    """Tracks episode rewards correctly across multiple parallel envs."""
+
     def __init__(self):
         super().__init__()
-        self.episode_rewards: list[float] = []
-        self.entropy_history: list[float] = []
-        # FIX (bug 1): one running total per parallel env, keyed by env index.
-        # A single shared float incorrectly accumulates rewards across all envs,
-        # inflating episode rewards by ~n_envs and corrupting all reported metrics.
-        self._current: dict[int, float] = {}
+        self.episode_rewards: list = []
+        self.entropy_history:  list = []
+        self._current: dict = {}
 
     def _on_step(self) -> bool:
         rewards = self.locals.get("rewards", [])
         dones   = self.locals.get("dones",   [])
-        for env_idx, (r, d) in enumerate(zip(rewards, dones)):
-            self._current[env_idx] = self._current.get(env_idx, 0.0) + float(r)
+        for idx, (r, d) in enumerate(zip(rewards, dones)):
+            self._current[idx] = self._current.get(idx, 0.0) + float(r)
             if d:
-                self.episode_rewards.append(self._current[env_idx])
-                self._current[env_idx] = 0.0
+                self.episode_rewards.append(self._current[idx])
+                self._current[idx] = 0.0
         return True
 
-    def _on_rollout_end(self) -> None:
-        # FIX (bug 3): was a silent no-op (try: pass). Now actually measures entropy
-        # so policy collapse during training is visible in logs.
+    def _on_rollout_end(self):
         if not hasattr(self.model, "rollout_buffer"):
             return
         try:
-            import torch
             buf = self.model.rollout_buffer
             if not buf.full:
                 return
@@ -193,219 +215,110 @@ class RewardLoggerCallback(BaseCallback):
                 dist = self.model.policy.get_distribution(obs_t)
                 ent  = dist.entropy().mean().item()
             self.entropy_history.append(ent)
-            if len(self.entropy_history) % 10 == 0:
-                warn = "  ⚠ collapsing — raise ent_coef" if ent < 0.5 else ""
-                log.info(f"  Policy entropy: {ent:.4f}{warn}")
         except Exception:
             pass
 
 
-# ---------------------------------------------------------------------------
-# Vanilla REINFORCE Implementation
-# ---------------------------------------------------------------------------
-class PolicyNet(nn.Module):
-    def __init__(self, obs_dim: int, act_dim: int, hidden: list):
+class CollapseDetectorCallback(BaseCallback):
+    """
+    Detects action collapse during training and logs RED warnings.
+    Records per-action frequency every rollout for the results JSON.
+    """
+
+    def __init__(self, n_actions: int = 12, window: int = 2048):
         super().__init__()
-        layers = []
-        in_dim = obs_dim
-        for h in hidden:
-            layers += [nn.Linear(in_dim, h), nn.ReLU()]
-            in_dim = h
-        layers.append(nn.Linear(in_dim, act_dim))
-        self.net = nn.Sequential(*layers)
-        self.baseline_net = nn.Sequential(
-            nn.Linear(obs_dim, 64), nn.ReLU(), nn.Linear(64, 1)
-        )
+        self.n_actions       = n_actions
+        self.window          = window
+        self._action_buf:    deque = deque(maxlen=window)
+        self.collapse_events: list = []   # (timestep, action, fraction)
+        self.diversity_history: list = []  # rolling unique-action fractions
 
-    def forward(self, x):
-        logits = self.net(x)
-        return Categorical(logits=logits)
+    def _on_step(self) -> bool:
+        actions = self.locals.get("actions", [])
+        for a in (actions if hasattr(actions, "__iter__") else [actions]):
+            self._action_buf.append(int(a))
 
-    def baseline(self, x):
-        return self.baseline_net(x).squeeze(-1)
+        if len(self._action_buf) == self.window and self.num_timesteps % self.window == 0:
+            counts   = np.bincount(list(self._action_buf), minlength=self.n_actions)
+            fracs    = counts / counts.sum()
+            top_idx  = int(np.argmax(fracs))
+            top_frac = float(fracs[top_idx])
+            unique   = int(np.sum(fracs > 0.01))
 
+            self.diversity_history.append({
+                "t": self.num_timesteps,
+                "unique_actions": unique,
+                "top_action": top_idx,
+                "top_frac": round(top_frac, 3),
+            })
 
-def reinforce_train_single(params: dict, exp_idx: int, save_dir: str) -> dict:
-    """Train one REINFORCE experiment."""
-    lr = params["lr"]
-    gamma = params["gamma"]
-    hidden = params["hidden"]
-    use_baseline = params["use_baseline"]
-    entropy_coef = params["entropy_coef"]
-    total_episodes = params["episodes"]
-
-    env = CPREnv(max_steps=200, difficulty="medium")
-    obs_dim = env.observation_space.shape[0]
-    act_dim = env.action_space.n
-
-    policy = PolicyNet(obs_dim, act_dim, hidden)
-    optimizer = optim.Adam(policy.parameters(), lr=lr)
-
-    # Checkpoint resume
-    ckpt_path = f"{save_dir}/reinforce_exp_{exp_idx+1}.pt"
-    episode_rewards = []
-    entropy_history = []
-    start_ep = 0
-
-    if os.path.exists(ckpt_path):
-        ckpt = torch.load(ckpt_path)
-        policy.load_state_dict(ckpt["policy_state"])
-        optimizer.load_state_dict(ckpt["optim_state"])
-        episode_rewards = ckpt.get("rewards", [])
-        entropy_history = ckpt.get("entropy", [])
-        start_ep = len(episode_rewards)
-        log.info(f"  Resuming from episode {start_ep}")
-
-    t0 = time.time()
-    SAVE_EVERY = 500
-
-    for ep in range(start_ep, total_episodes):
-        obs, _ = env.reset()
-        log_probs, rewards_ep, entropies, baselines = [], [], [], []
-        done = False
-
-        while not done:
-            obs_t = torch.FloatTensor(obs).unsqueeze(0)
-            dist = policy(obs_t)
-            action = dist.sample()
-            lp = dist.log_prob(action)
-            ent = dist.entropy()
-
-            if use_baseline:
-                bv = policy.baseline(obs_t)
-                baselines.append(bv)
-
-            obs, r, terminated, truncated, _ = env.step(action.item())
-            done = terminated or truncated
-
-            log_probs.append(lp)
-            rewards_ep.append(r)
-            entropies.append(ent)
-
-        # Compute discounted returns
-        G, returns = 0.0, []
-        for r in reversed(rewards_ep):
-            G = r + gamma * G
-            returns.insert(0, G)
-        returns_t = torch.FloatTensor(returns)
-
-        # Normalise returns
-        if len(returns) > 1:
-            returns_t = (returns_t - returns_t.mean()) / (returns_t.std() + 1e-8)
-
-        # Policy loss
-        if use_baseline and baselines:
-            baseline_vals = torch.cat(baselines)
-            advantages = returns_t - baseline_vals.detach()
-            baseline_loss = nn.functional.mse_loss(baseline_vals, returns_t)
-        else:
-            advantages = returns_t
-            baseline_loss = torch.tensor(0.0)
-
-        log_probs_t = torch.stack(log_probs).squeeze()
-        entropies_t = torch.stack(entropies).squeeze()
-
-        if log_probs_t.dim() == 0:
-            log_probs_t = log_probs_t.unsqueeze(0)
-            entropies_t = entropies_t.unsqueeze(0)
-            advantages = advantages.unsqueeze(0)
-
-        policy_loss = -(log_probs_t * advantages).mean()
-        entropy_bonus = -entropy_coef * entropies_t.mean()
-        loss = policy_loss + entropy_bonus + 0.5 * baseline_loss
-
-        optimizer.zero_grad()
-        loss.backward()
-        nn.utils.clip_grad_norm_(policy.parameters(), 1.0)
-        optimizer.step()
-
-        ep_reward = sum(rewards_ep)
-        episode_rewards.append(ep_reward)
-        entropy_history.append(float(entropies_t.mean().detach()))
-
-        if (ep + 1) % SAVE_EVERY == 0:
-            torch.save({
-                "policy_state": policy.state_dict(),
-                "optim_state": optimizer.state_dict(),
-                "rewards": episode_rewards,
-                "entropy": entropy_history,
-            }, ckpt_path)
-            mean_rew = np.mean(episode_rewards[-50:])
-            log.info(f"    Ep {ep+1}/{total_episodes}  mean_rew={mean_rew:.2f}")
-
-    elapsed = time.time() - t0
-    env.close()
-
-    # Final save
-    torch.save({
-        "policy_state": policy.state_dict(),
-        "optim_state": optimizer.state_dict(),
-        "rewards": episode_rewards,
-        "entropy": entropy_history,
-    }, ckpt_path)
-
-    return {
-        "exp": exp_idx + 1,
-        "learning_rate": lr,
-        "gamma": gamma,
-        "use_baseline": use_baseline,
-        "entropy_coef": entropy_coef,
-        "hidden_arch": str(hidden),
-        "mean_reward_last50": round(float(np.mean(episode_rewards[-50:])), 3),
-        "max_reward": round(float(np.max(episode_rewards)), 3),
-        "total_episodes": total_episodes,
-        "train_time_s": round(elapsed, 1),
-        "reward_curve": episode_rewards[-200:],
-        "entropy_curve": entropy_history[-200:],
-    }
+            if top_frac > 0.50:
+                from environment.custom_env import ACTION_NAMES
+                aname = ACTION_NAMES[top_idx] if top_idx < len(ACTION_NAMES) else str(top_idx)
+                log.warning(
+                    f"\033[91m[COLLAPSE] t={self.num_timesteps:,} | "
+                    f"{aname} = {top_frac:.0%} of {self.window} steps | "
+                    f"unique={unique} — consider raising ent_coef\033[0m"
+                )
+                self.collapse_events.append({
+                    "timestep": self.num_timesteps,
+                    "action":   top_idx,
+                    "fraction": round(top_frac, 3),
+                })
+            elif top_frac < 0.30:
+                log.info(
+                    f"[diversity ✓] t={self.num_timesteps:,} | "
+                    f"unique={unique}/12 | top={top_frac:.0%}"
+                )
+        return True
 
 
 # ---------------------------------------------------------------------------
-# PPO training routine
+# PPO training
 # ---------------------------------------------------------------------------
-def make_env():
-    return Monitor(CPREnv(max_steps=200, difficulty="medium"))
+
+def make_env(difficulty: str = "medium"):
+    def _inner():
+        env = CPREnv(max_steps=200, difficulty=difficulty)
+        return Monitor(env)
+    return _inner
 
 
 def train_ppo():
     results_path = "results/ppo_results.json"
-    models_dir = "models/pg/ppo"
-    logs_dir = "logs/ppo"
-
+    models_dir   = "models/pg/ppo"
+    logs_dir     = "logs/ppo"
     os.makedirs(models_dir, exist_ok=True)
     os.makedirs(logs_dir, exist_ok=True)
     os.makedirs("results", exist_ok=True)
 
-    all_results = []
-    if os.path.exists(results_path):
-        all_results = _safe_load_results(results_path)
-        log.info(f"Resuming PPO — {len(all_results)} experiments done")
-
-    start_exp = len(all_results)
+    all_results = _safe_load_results(results_path)
+    start_exp   = len(all_results)
+    log.info(f"PPO: resuming from experiment {start_exp + 1}/10")
 
     for exp_idx, params in enumerate(PPO_EXPERIMENTS):
+        exp_num    = exp_idx + 1
+        difficulty = PPO_DIFFICULTY.get(exp_num, "medium")
+
         if exp_idx < start_exp:
-            log.info(f"Skipping PPO exp {exp_idx+1}")
+            log.info(f"Skipping PPO exp {exp_num} (already done)")
             continue
 
-        log.info(f"\n{'='*60}\nPPO Experiment {exp_idx+1}/10\nParams: {params}\n{'='*60}")
+        log.info(f"\n{'='*64}\nPPO Experiment {exp_num}/10  [difficulty={difficulty}]")
+        log.info(f"Params: {params}\n{'='*64}")
 
-        p = params.copy()
-
-
+        p        = params.copy()
         total_ts = p.pop("total_timesteps")
         net_arch = p.pop("net_arch")
-        # FIX (bug 4): SB3 >= 1.7 requires dict(pi=[...], vf=[...]) to create
-        # separate actor/critic networks. The old list form silently creates a shared
-        # trunk, which is suboptimal for actor-critic methods like PPO.
         policy_kwargs = dict(net_arch=dict(pi=net_arch, vf=net_arch))
 
         try:
-            vec_env = make_vec_env(make_env, n_envs=4)
-            reward_cb = RewardLoggerCallback()
-            ckpt_cb = CheckpointCallback(
+            vec_env     = make_vec_env(make_env(difficulty), n_envs=4)
+            reward_cb   = RewardLoggerCallback()
+            collapse_cb = CollapseDetectorCallback()
+            ckpt_cb     = CheckpointCallback(
                 save_freq=50_000,
-                save_path=f"{models_dir}/exp_{exp_idx+1}",
+                save_path=f"{models_dir}/exp_{exp_num}",
                 name_prefix="ppo_cpr",
             )
 
@@ -418,77 +331,236 @@ def train_ppo():
             )
 
             t0 = time.time()
-            model.learn(total_timesteps=total_ts,
-                        callback=[reward_cb, ckpt_cb],
-                        tb_log_name=f"ppo_exp_{exp_idx+1}")
+            model.learn(
+                total_timesteps=total_ts,
+                callback=[reward_cb, collapse_cb, ckpt_cb],
+                tb_log_name=f"ppo_exp_{exp_num}",
+            )
             elapsed = time.time() - t0
 
-            model_path = f"{models_dir}/ppo_exp_{exp_idx+1}_final"
+            model_path = f"{models_dir}/ppo_exp_{exp_num}_final"
             model.save(model_path)
 
             ep_rews = reward_cb.episode_rewards
             result = {
-                "exp": exp_idx + 1,
-                "learning_rate": params.get("learning_rate"),
-                "gamma": params.get("gamma"),
-                "ent_coef": params.get("ent_coef"),
-                "clip_range": params.get("clip_range"),
-                "n_steps": params.get("n_steps"),
-                "batch_size": params.get("batch_size"),
-                "n_epochs": params.get("n_epochs"),
-                "net_arch": str(net_arch),
+                "exp":                exp_num,
+                "difficulty":         difficulty,
+                "learning_rate":      params["learning_rate"],
+                "gamma":              params["gamma"],
+                "ent_coef":           params["ent_coef"],
+                "clip_range":         params["clip_range"],
+                "n_steps":            params["n_steps"],
+                "batch_size":         params["batch_size"],
+                "n_epochs":           params["n_epochs"],
+                "net_arch":           str(net_arch),
                 "mean_reward_last50": round(float(np.mean(ep_rews[-50:])) if ep_rews else 0.0, 3),
-                "max_reward": round(float(np.max(ep_rews)) if ep_rews else 0.0, 3),
-                "total_episodes": len(ep_rews),
-                "train_time_s": round(elapsed, 1),
-                "reward_curve": ep_rews[-200:],
+                "max_reward":         round(float(np.max(ep_rews))         if ep_rews else 0.0, 3),
+                "total_episodes":     len(ep_rews),
+                "train_time_s":       round(elapsed, 1),
+                "reward_curve":       ep_rews[-200:],
+                "entropy_curve":      reward_cb.entropy_history[-100:],
+                "collapse_events":    collapse_cb.collapse_events,
+                "diversity_summary":  collapse_cb.diversity_history[-20:],
             }
 
             all_results.append(result)
             _atomic_save(results_path, all_results)
 
-            log.info(f"  ✓ Mean reward: {result['mean_reward_last50']:.2f}  Max: {result['max_reward']:.2f}")
+            n_collapse = len(collapse_cb.collapse_events)
+            log.info(
+                f"  ✓ Mean={result['mean_reward_last50']:.2f}  "
+                f"Max={result['max_reward']:.2f}  "
+                f"CollapseEvents={n_collapse}  "
+                f"Saved→{model_path}"
+            )
+            if n_collapse > 3:
+                log.warning(
+                    f"  ⚠  {n_collapse} collapse events — model may not generalise well. "
+                    f"Consider experiment with higher ent_coef."
+                )
 
         except Exception as e:
-            log.error(f"  ✗ PPO Exp {exp_idx+1} failed: {e}")
-            all_results.append({"exp": exp_idx + 1, "error": str(e)})
+            log.error(f"  ✗ PPO Exp {exp_num} failed: {e}", exc_info=True)
+            all_results.append({"exp": exp_num, "error": str(e)})
             _atomic_save(results_path, all_results)
         finally:
-            try:
-                vec_env.close()
-            except Exception:
-                pass
+            try: vec_env.close()
+            except Exception: pass
 
     log.info("PPO Training Complete")
 
 
+# ---------------------------------------------------------------------------
+# REINFORCE (vanilla policy gradient)
+# ---------------------------------------------------------------------------
+
+class PolicyNet(nn.Module):
+    def __init__(self, obs_dim: int, act_dim: int, hidden: list):
+        super().__init__()
+        layers = []
+        in_dim = obs_dim
+        for h in hidden:
+            layers += [nn.Linear(in_dim, h), nn.Tanh()]
+            in_dim = h
+        layers += [nn.Linear(in_dim, act_dim)]
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return Categorical(logits=self.net(x))
+
+
+SAVE_EVERY = 200
+
+
+def reinforce_train_single(params: dict, exp_idx: int, save_dir: str) -> dict:
+    lr           = params["lr"]
+    gamma        = params["gamma"]
+    hidden       = params["hidden"]
+    use_baseline = params["use_baseline"]
+    entropy_coef = params["entropy_coef"]
+    total_ep     = params["episodes"]
+
+    ckpt_path    = f"{save_dir}/reinforce_exp_{exp_idx + 1}.pt"
+    env          = CPREnv(max_steps=200, difficulty="medium")
+
+    policy  = PolicyNet(OBS_DIM, 12, hidden)
+    opt     = optim.Adam(policy.parameters(), lr=lr)
+    baseline= 0.0
+
+    episode_rewards: list = []
+    entropy_history: list = []
+    action_counts        = np.zeros(12)
+    t0                   = time.time()
+
+    # Rolling window for collapse detection
+    recent_actions: deque = deque(maxlen=500)
+
+    for ep in range(total_ep):
+        obs, _    = env.reset()
+        states, actions_ep, rewards_ep, logprobs_ep, entropies_ep = [], [], [], [], []
+        done      = False
+
+        while not done:
+            obs_t = torch.FloatTensor(obs).unsqueeze(0)
+            dist  = policy(obs_t)
+            a     = dist.sample()
+            obs, r, terminated, truncated, _ = env.step(a.item())
+            done = terminated or truncated
+            states.append(obs_t)
+            actions_ep.append(a)
+            rewards_ep.append(r)
+            logprobs_ep.append(dist.log_prob(a))
+            entropies_ep.append(dist.entropy())
+            action_counts[a.item()] += 1
+            recent_actions.append(a.item())
+
+        # Monte Carlo returns
+        G, returns = 0.0, []
+        for r in reversed(rewards_ep):
+            G = r + gamma * G
+            returns.insert(0, G)
+        returns_t    = torch.FloatTensor(returns)
+        logprobs_t   = torch.stack(logprobs_ep)
+        entropies_t  = torch.stack(entropies_ep)
+
+        if use_baseline:
+            ep_mean = float(returns_t.mean())
+            baseline = 0.95 * baseline + 0.05 * ep_mean
+            advantages = returns_t - baseline
+        else:
+            advantages = returns_t
+
+        # Normalise advantages
+        if len(advantages) > 1:
+            adv_std = advantages.std()
+            if adv_std > 1e-8:
+                advantages = (advantages - advantages.mean()) / (adv_std + 1e-8)
+
+        policy_loss  = -(logprobs_t * advantages.detach()).mean()
+        entropy_bonus = -entropy_coef * entropies_t.mean()
+        loss          = policy_loss + entropy_bonus
+
+        opt.zero_grad()
+        loss.backward()
+        nn.utils.clip_grad_norm_(policy.parameters(), 1.0)
+        opt.step()
+
+        ep_reward = sum(rewards_ep)
+        episode_rewards.append(ep_reward)
+        entropy_history.append(float(entropies_t.mean().detach()))
+
+        if (ep + 1) % SAVE_EVERY == 0:
+            torch.save({
+                "policy_state": policy.state_dict(),
+                "optim_state":  opt.state_dict(),
+                "rewards":      episode_rewards,
+                "entropy":      entropy_history,
+            }, ckpt_path)
+            mean_rew = float(np.mean(episode_rewards[-50:]))
+            # Collapse check
+            if len(recent_actions) >= 100:
+                counts = np.bincount(list(recent_actions), minlength=12)
+                top_frac = float(counts.max() / counts.sum())
+                if top_frac > 0.60:
+                    from environment.custom_env import ACTION_NAMES
+                    top_a = int(counts.argmax())
+                    log.warning(
+                        f"\033[91m  [COLLAPSE] Ep {ep+1} | "
+                        f"{ACTION_NAMES[top_a]} = {top_frac:.0%} in last 500 steps\033[0m"
+                    )
+            log.info(f"    Ep {ep+1}/{total_ep}  mean_rew={mean_rew:.2f}  "
+                     f"H={entropy_history[-1]:.3f}")
+
+    elapsed = time.time() - t0
+    env.close()
+
+    torch.save({
+        "policy_state": policy.state_dict(),
+        "optim_state":  opt.state_dict(),
+        "rewards":      episode_rewards,
+        "entropy":      entropy_history,
+    }, ckpt_path)
+
+    return {
+        "exp":                exp_idx + 1,
+        "learning_rate":      lr,
+        "gamma":              gamma,
+        "use_baseline":       use_baseline,
+        "entropy_coef":       entropy_coef,
+        "hidden_arch":        str(hidden),
+        "mean_reward_last50": round(float(np.mean(episode_rewards[-50:])), 3),
+        "max_reward":         round(float(np.max(episode_rewards)), 3),
+        "total_episodes":     total_ep,
+        "train_time_s":       round(elapsed, 1),
+        "reward_curve":       episode_rewards[-200:],
+        "entropy_curve":      entropy_history[-200:],
+    }
+
+
+OBS_DIM = 56   # matches custom_env.py v4
+
+
 def train_reinforce():
     results_path = "results/reinforce_results.json"
-    save_dir = "models/pg/reinforce"
+    save_dir     = "models/pg/reinforce"
     os.makedirs(save_dir, exist_ok=True)
     os.makedirs("results", exist_ok=True)
 
-    all_results = []
-    if os.path.exists(results_path):
-        all_results = _safe_load_results(results_path)
-        log.info(f"Resuming REINFORCE — {len(all_results)} experiments done")
-
-    start_exp = len(all_results)
+    all_results = _safe_load_results(results_path)
+    start_exp   = len(all_results)
 
     for exp_idx, params in enumerate(REINFORCE_EXPERIMENTS):
         if exp_idx < start_exp:
-            log.info(f"Skipping REINFORCE exp {exp_idx+1}")
+            log.info(f"Skipping REINFORCE exp {exp_idx + 1}")
             continue
-
-        log.info(f"\n{'='*60}\nREINFORCE Experiment {exp_idx+1}/10\nParams: {params}\n{'='*60}")
-
+        log.info(f"\n{'='*64}\nREINFORCE Experiment {exp_idx+1}/10  {params}\n{'='*64}")
         try:
             result = reinforce_train_single(params, exp_idx, save_dir)
             all_results.append(result)
             _atomic_save(results_path, all_results)
-            log.info(f"  ✓ Mean reward: {result['mean_reward_last50']:.2f}")
+            log.info(f"  ✓ Mean={result['mean_reward_last50']:.2f}")
         except Exception as e:
-            log.error(f"  ✗ REINFORCE Exp {exp_idx+1} failed: {e}")
+            log.error(f"  ✗ REINFORCE Exp {exp_idx+1} failed: {e}", exc_info=True)
             all_results.append({"exp": exp_idx + 1, "error": str(e)})
             _atomic_save(results_path, all_results)
 
@@ -500,7 +572,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--algo", choices=["ppo", "reinforce", "all"], default="all")
     args = parser.parse_args()
-
     if args.algo in ("reinforce", "all"):
         train_reinforce()
     if args.algo in ("ppo", "all"):

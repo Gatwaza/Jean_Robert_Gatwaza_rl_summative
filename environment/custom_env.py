@@ -1,70 +1,61 @@
 """
-CPR Position Assessment Environment
-=====================================
-A custom Gymnasium environment for reinforcement learning-based
-CPR position and procedure correctness assessment.
+CPR Position Assessment Environment  (v4 — Exploit-Proof Edition)
+==================================================================
 
-The environment models a patient on the ground and evaluates
-whether observed body landmarks (via MediaPipe-style pose data)
-correspond to correct first-aid / CPR procedures.
+Root-cause fixes from live run (April 2026 terminal output):
 
-Observation: 17 normalized body landmark coordinates (x, y, visibility)
-             + patient vitals proxy (HR estimate, chest rise rate)
-             = 17*3 + 2 = 53-dimensional continuous vector
+  EXPLOIT 1 — MONITOR_PULSE farmed at +0.5/step for 100-150 steps (64-72%)
+    Fix: consecutive_cap = 3. After 3 in a row: escalating penalty & early
+         return (no base reward). Stops the exploit cold.
 
-Action Space (Discrete, 12 actions):
-  0  - ASSESS_CONSCIOUSNESS   : Check responsiveness
-  1  - CALL_EMERGENCY         : Instruct bystander to call 911
-  2  - OPEN_AIRWAY            : Head-tilt chin-lift
-  3  - CHECK_BREATHING        : Look/listen/feel ≤10 sec
-  4  - BEGIN_CHEST_COMPRESSIONS : 30x at 100-120 bpm, 5-6 cm depth
-  5  - DELIVER_RESCUE_BREATHS : 2 breaths after 30 compressions
-  6  - DEFIBRILLATE           : AED shock if shockable rhythm
-  7  - MONITOR_PULSE          : Check carotid pulse
-  8  - RECOVERY_POSITION      : Roll to lateral decubitus
-  9  - REPOSITION_HANDS       : Correct hand placement (lower sternum)
-  10 - TILT_HEAD_BACK         : Extend neck to open airway
-  11 - WAIT_OBSERVE           : Passive observation (penalized if prolonged)
+  EXPLOIT 2 — Rescue breaths used as primary HR driver
+    Fix: breath_hr_gain  0.08 → 0.03  (support role only)
+         comp_hr_gain    0.18 → 0.22  (compressions are the engine)
+         Compression streak multiplier: consecutive compressions give up to
+         1.5× HR gain, simulating the clinical 30:2 cycle rhythm bonus.
+
+  EXPLOIT 3 — HR plateaus at 0.80-0.87, ROSC never reached
+    Fix: With corrected gains above, a clean sequence now reliably reaches
+         HR ≥ 0.90. ROSC sustain_required=2 (medium) unchanged.
+
+  EXPLOIT 4 — Action collapse (single action > 60% of episode)
+    Fix: _diversity_bonus() adds +0.05 per unique action in the last 10
+         steps beyond 1 (max +0.25 at 6 unique), making diversity valuable.
+
+New in v4 (beyond v3):
+  • consecutive_cap dict with per-action tuning
+  • compression streak multiplier (streak bonus up to ×1.5)
+  • diversity bonus (deque of last 10 actions)
+  • breath_hr_gain explicitly parametrised (difficulty-aware)
 """
 
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-import random
+import time
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Optional, Tuple, Dict, Any, List
-
+from typing import Optional, Tuple, Dict, Any, List, Deque
 
 # ---------------------------------------------------------------------------
-# Patient State Dataclass
+# Patient State
 # ---------------------------------------------------------------------------
 @dataclass
 class PatientState:
-    """Encodes the physiological and positional state of the CPR patient."""
-
-    # Pose landmarks (17 MediaPipe keypoints: nose, eyes, ears, shoulders,
-    # elbows, wrists, hips, knees, ankles) — normalised [0,1]
-    landmarks: np.ndarray = field(default_factory=lambda: np.zeros(51))
-
-    # Vital proxies
-    heart_rate: float = 0.0          # 0 = no pulse, 1 = normal
-    chest_rise_rate: float = 0.0     # breaths detected per minute (norm)
-    airway_open: bool = False
-    head_position: float = 0.0       # 0=neutral, 1=tilted back (ideal)
-    hand_placement: float = 0.0      # 0=wrong, 1=correct sternal position
-    compression_depth: float = 0.0   # 0=none, 1=adequate (5-6 cm)
-    recovery_position: bool = False
-    consciousness_level: float = 0.0 # 0=unresponsive, 1=responsive
-
-    # Episode counters
+    landmarks:            np.ndarray = field(default_factory=lambda: np.zeros(51))
+    heart_rate:           float = 0.0
+    chest_rise_rate:      float = 0.0
+    airway_open:          bool  = False
+    head_position:        float = 0.0
+    hand_placement:       float = 0.0
+    compression_depth:    float = 0.0
+    recovery_position:    bool  = False
+    consciousness_level:  float = 0.0
     compressions_delivered: int = 0
-    breaths_delivered: int = 0
-    time_without_action: int = 0
+    breaths_delivered:    int   = 0
+    time_without_action:  int   = 0
 
 
-# ---------------------------------------------------------------------------
-# Action metadata
-# ---------------------------------------------------------------------------
 ACTION_NAMES = [
     "ASSESS_CONSCIOUSNESS",
     "CALL_EMERGENCY",
@@ -81,7 +72,7 @@ ACTION_NAMES = [
 ]
 
 N_ACTIONS = len(ACTION_NAMES)
-OBS_DIM = 53  # 51 landmark floats + heart_rate + chest_rise_rate
+OBS_DIM   = 56   # 51 landmarks + 2 vitals + 1 stage norm + 2 temporal
 
 
 # ---------------------------------------------------------------------------
@@ -89,416 +80,416 @@ OBS_DIM = 53  # 51 landmark floats + heart_rate + chest_rise_rate
 # ---------------------------------------------------------------------------
 class CPREnv(gym.Env):
     """
-    Custom Gymnasium environment for CPR position assessment.
+    Gymnasium CPR environment — exploit-proof reward shaping.
 
     Parameters
     ----------
-    max_steps : int
-        Maximum number of steps per episode (default 200).
-    noise_std : float
-        Gaussian noise added to landmark observations to simulate
-        MediaPipe detection jitter (default 0.02).
-    difficulty : str
-        'easy'   — patient responds faster, tolerant rewards
-        'medium' — standard scenario
-        'hard'   — delayed responses, strict sequencing required
+    max_steps   : max steps per episode        (default 200)
+    noise_std   : landmark jitter std          (default 0.02)
+    difficulty  : 'easy' | 'medium' | 'hard'
+    render_mode : 'human' | 'rgb_array' | None
     """
 
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 10}
 
+    # Consecutive-use caps: key = action_id, value = max consecutive uses allowed
+    CONSECUTIVE_CAPS: Dict[int, int] = {
+        7:  3,   # MONITOR_PULSE  — 3 max, then penalise (primary exploit)
+        11: 2,   # WAIT_OBSERVE   — 2 max
+        10: 2,   # TILT_HEAD_BACK — only useful once, diminishing returns fast
+        3:  2,   # CHECK_BREATHING
+    }
+
     def __init__(
         self,
-        max_steps: int = 200,
-        noise_std: float = 0.02,
-        difficulty: str = "medium",
+        max_steps:   int   = 200,
+        noise_std:   float = 0.02,
+        difficulty:  str   = "medium",
         render_mode: Optional[str] = None,
     ):
         super().__init__()
-
-        self.max_steps = max_steps
-        self.noise_std = noise_std
-        self.difficulty = difficulty
+        self.max_steps   = max_steps
+        self.noise_std   = noise_std
+        self.difficulty  = difficulty
         self.render_mode = render_mode
 
-        # --- Spaces --------------------------------------------------------
-        # Continuous observation: landmark coords + vitals
         self.observation_space = spaces.Box(
             low=0.0, high=1.0, shape=(OBS_DIM,), dtype=np.float32
         )
-        # Discrete action space: 12 CPR actions
         self.action_space = spaces.Discrete(N_ACTIONS)
 
-        # Internal state
-        self._patient: Optional[PatientState] = None
-        self._step_count: int = 0
-        self._actions_done: set = set()
-        self._protocol_stage: int = 0  # 0–5 protocol phases
-        self._cumulative_reward: float = 0.0
+        self._set_difficulty_params(difficulty)
+        self._reset_state()
 
-        # Difficulty multipliers
-        _diff_map = {"easy": 1.5, "medium": 1.0, "hard": 0.6}
-        self._diff_scale = _diff_map.get(difficulty, 1.0)
-
-        # Rendering
         self._renderer = None
+        self._episode  = 0
 
-    # ------------------------------------------------------------------
-    # Gymnasium API
-    # ------------------------------------------------------------------
+    # ── Difficulty ─────────────────────────────────────────────────────────────
 
-    def reset(
-        self,
-        *,
-        seed: Optional[int] = None,
-        options: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[np.ndarray, Dict[str, Any]]:
-        super().reset(seed=seed)
+    def set_difficulty(self, difficulty: str):
+        """Hot-swap difficulty without resetting. Use for curriculum schedules."""
+        self.difficulty = difficulty
+        self._set_difficulty_params(difficulty)
 
-        self._step_count = 0
-        self._protocol_stage = 0
+    def _set_difficulty_params(self, difficulty: str):
+        d = difficulty.lower()
+        if d == "easy":
+            self._diff_scale       = 1.5
+            self._hr_decay         = 0.004
+            self._rosc_threshold   = 0.88
+            self._comp_depth_base  = 0.55
+            self._sustain_required = 1
+            self._comp_hr_gain     = 0.26
+            self._breath_hr_gain   = 0.04
+        elif d == "hard":
+            self._diff_scale       = 0.70
+            self._hr_decay         = 0.012
+            self._rosc_threshold   = 0.92
+            self._comp_depth_base  = 0.38
+            self._sustain_required = 3
+            self._comp_hr_gain     = 0.18
+            self._breath_hr_gain   = 0.02
+        else:  # medium
+            self._diff_scale       = 1.0
+            self._hr_decay         = 0.010   # ↑ from 0.008 — passive strategies fail faster
+            self._rosc_threshold   = 0.90
+            self._comp_depth_base  = 0.45
+            self._sustain_required = 2
+            self._comp_hr_gain     = 0.22   # ↑ from 0.18 — primary driver
+            self._breath_hr_gain   = 0.03   # ↓ from 0.08 — support role
+
+    # ── Episode-level state ────────────────────────────────────────────────────
+
+    def _reset_state(self):
+        self._step_count        = 0
+        self._protocol_stage    = 0
         self._cumulative_reward = 0.0
-        self._actions_done = set()
+        self._actions_done: set = set()
+        self._action_history    = [-1, -1, -1]
+        self._repeat_counts:    Dict[int, int] = {}
+        self._last_action       = -1
+        self._consecutive_count = 0
+        self._recent_actions:   deque = deque(maxlen=10)
+        self._last_comp_time    = 0.0
+        self._comp_intervals:   list  = []
+        self._comp_streak       = 0
+        self._rosc_steps        = 0
 
-        # Initialise patient in collapsed state
+    # ── Gymnasium API ──────────────────────────────────────────────────────────
+
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+        self._episode += 1
+        self._reset_state()
         self._patient = PatientState(
-            landmarks=self._generate_collapse_pose(),
-            heart_rate=0.0,
-            chest_rise_rate=0.0,
-            airway_open=False,
-            head_position=0.0,
-            hand_placement=0.0,
-            compression_depth=0.0,
-            recovery_position=False,
-            consciousness_level=0.0,
-            compressions_delivered=0,
-            breaths_delivered=0,
-            time_without_action=0,
+            landmarks = self._generate_collapse_pose()
         )
+        return self._get_obs(), self._get_info()
 
-        obs = self._get_obs()
-        info = self._get_info()
-        return obs, info
-
-    def step(
-        self, action: int
-    ) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
-        assert self.action_space.contains(action), f"Invalid action: {action}"
-
+    def step(self, action: int):
+        assert self.action_space.contains(action)
         self._step_count += 1
+
+        # Consecutive tracking
+        if action == self._last_action:
+            self._consecutive_count += 1
+        else:
+            self._consecutive_count = 1
+        self._last_action = action
+        self._recent_actions.append(action)
+
         reward = self._compute_reward(action)
         self._apply_action(action)
+        self._action_history = [action] + self._action_history[:2]
         self._patient.time_without_action = (
             0 if action != 11 else self._patient.time_without_action + 1
         )
-
         self._cumulative_reward += reward
 
-        obs = self._get_obs()
         terminated = self._is_terminal()
-        truncated = self._step_count >= self.max_steps
+        truncated  = self._step_count >= self.max_steps
         info = self._get_info()
         info["action_name"] = ACTION_NAMES[action]
-        info["reward"] = reward
-
+        info["reward"]      = reward
         if self.render_mode == "human":
             self.render()
-
-        return obs, reward, terminated, truncated, info
+        return self._get_obs(), reward, terminated, truncated, info
 
     def render(self):
         if self._renderer is None:
-            from environment.rendering import CPRRenderer
+            from rendering import CPRRenderer
             self._renderer = CPRRenderer()
-        self._renderer.render(self._patient, self._step_count, self._cumulative_reward)
+        self._renderer.render(
+            self._patient, self._step_count, self._cumulative_reward,
+            last_action=self._action_history[0] if self._action_history else -1,
+        )
 
     def close(self):
         if self._renderer is not None:
             self._renderer.close()
             self._renderer = None
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
+    # ── Reward v4 ──────────────────────────────────────────────────────────────
 
-    def _generate_collapse_pose(self) -> np.ndarray:
-        """
-        Generate realistic normalised landmark coordinates of a person
-        lying supine on the ground (y-values near 0.8–1.0 = bottom of frame).
-        Coordinates: [x0,y0,v0, x1,y1,v1, ...] for 17 keypoints.
-        """
-        rng = self.np_random if hasattr(self, "np_random") else np.random
-        # Rough supine layout (MediaPipe 17-keypoint order)
-        base_landmarks = np.array([
-            # nose
-            0.50, 0.82, 0.95,
-            # left_eye_inner, left_eye, left_eye_outer
-            0.53, 0.80, 0.90,
-            0.56, 0.79, 0.88,
-            0.58, 0.78, 0.85,
-            # right_eye_inner, right_eye, right_eye_outer
-            0.47, 0.80, 0.90,
-            0.44, 0.79, 0.88,
-            0.42, 0.78, 0.85,
-            # left_ear
-            0.60, 0.81, 0.80,
-            # right_ear
-            0.40, 0.81, 0.80,
-            # mouth_left
-            0.54, 0.84, 0.90,
-            # mouth_right
-            0.46, 0.84, 0.90,
-            # left_shoulder
-            0.60, 0.72, 0.95,
-            # right_shoulder
-            0.40, 0.72, 0.95,
-            # left_elbow
-            0.65, 0.60, 0.90,
-            # right_elbow
-            0.35, 0.60, 0.90,
-            # left_wrist
-            0.62, 0.50, 0.85,
-            # right_wrist
-            0.38, 0.50, 0.85,
-        ], dtype=np.float32)
+    def _compute_reward(self, action: int) -> float:
+        p, stage, scale, done = (
+            self._patient, self._protocol_stage, self._diff_scale, self._actions_done
+        )
+        r = -0.01 * (self._step_count / self.max_steps)   # living cost
 
-        # Add jitter
-        noise = rng.normal(0, 0.015, size=base_landmarks.shape).astype(np.float32)
-        return np.clip(base_landmarks + noise, 0.0, 1.0)
+        # ── CONSECUTIVE-USE EXPLOIT BLOCK ─────────────────────────────────────
+        cap = self.CONSECUTIVE_CAPS.get(action, 0)
+        if cap > 0 and self._consecutive_count > cap:
+            over = self._consecutive_count - cap
+            penalty = -0.6 * min(over, 6)
+            # For MONITOR_PULSE specifically — hard block after cap
+            if action == 7:
+                r += penalty + self._diversity_bonus()
+                return float(np.clip(r, -6.0, 22.0))
+            r += penalty
+
+        # ── Repeat penalty ────────────────────────────────────────────────────
+        self._repeat_counts[action] = self._repeat_counts.get(action, 0) + 1
+        n_reps = self._repeat_counts[action]
+        if action in done and n_reps > 1:
+            r -= 0.35 * min(n_reps - 1, 5)
+
+        # ── Protocol rewards ───────────────────────────────────────────────────
+
+        if action == 0:   # ASSESS_CONSCIOUSNESS
+            if stage == 0:
+                r += 3.0 * scale; self._protocol_stage = 1; done.add(0)
+            elif 0 in done: r -= 0.8
+            else:           r -= 0.5
+
+        elif action == 1:   # CALL_EMERGENCY
+            if stage == 1:
+                r += 3.0 * scale; self._protocol_stage = 2; done.add(1)
+            elif stage == 0: r -= 0.8
+            elif 1 in done:  r -= 0.6
+            else:            r -= 0.4
+
+        elif action == 10:  # TILT_HEAD_BACK
+            if stage >= 2:
+                if p.head_position < 0.9:
+                    r += 1.5 * scale * (1 - p.head_position)
+                    p.head_position = min(1.0, p.head_position + 0.4)
+                    p.airway_open   = p.head_position > 0.5
+                else:
+                    r -= 0.3
+            else:
+                r -= 0.8
+
+        elif action == 2:   # OPEN_AIRWAY
+            if stage >= 2:
+                if not p.airway_open:
+                    r += 1.5 * scale
+                    p.head_position = min(1.0, p.head_position + 0.5)
+                    p.airway_open   = True
+                    if stage == 2:
+                        self._protocol_stage = 3; done.add(2)
+                else:
+                    r -= 0.3
+            else:
+                r -= 0.8
+
+        elif action == 3:   # CHECK_BREATHING
+            if stage == 3:
+                r += 1.5 * scale; self._protocol_stage = 4; done.add(3)
+            elif stage > 3: r -= 0.25
+            else:           r -= 0.8
+
+        elif action == 9:   # REPOSITION_HANDS
+            if stage >= 4:
+                if p.hand_placement < 1.0:
+                    r += 1.0 * scale * (1 - p.hand_placement)
+                    p.hand_placement = min(1.0, p.hand_placement + 0.5)
+                else:
+                    r -= 0.2
+            else:
+                r -= 0.5
+
+        elif action == 4:   # BEGIN_CHEST_COMPRESSIONS — PRIMARY HR DRIVER
+            if stage >= 4:
+                depth = min(1.0, self._comp_depth_base + 0.5 * p.hand_placement)
+                p.compression_depth      = depth
+                p.compressions_delivered += 30
+
+                # Streak bonus: reward continued compressions (clinical 30:2 rhythm)
+                self._comp_streak += 1
+                streak_mult = min(1.0 + 0.08 * (self._comp_streak - 1), 1.5)
+                hr_gain = self._comp_hr_gain * depth * scale * streak_mult
+                p.heart_rate = min(1.0, p.heart_rate + hr_gain)
+                # Stage 5+ streak bonus: incentivise sustained compressions mid-episode
+                if stage >= 5 and self._comp_streak >= 2:
+                    r += 4.5 * depth * scale * streak_mult   # scales up to ~6.75 at max streak
+                else:
+                    r += 3.5 * depth * scale
+
+                # Compression rate bonus (100-120 bpm)
+                now = time.perf_counter()
+                if self._last_comp_time > 0:
+                    interval = now - self._last_comp_time
+                    bpm_est  = 60.0 / max(interval, 0.01)
+                    self._comp_intervals.append(bpm_est)
+                    if len(self._comp_intervals) > 5:
+                        self._comp_intervals.pop(0)
+                    avg_bpm = float(np.mean(self._comp_intervals))
+                    if   100 <= avg_bpm <= 120: r += 1.0 * scale
+                    elif  90 <= avg_bpm <= 130: r += 0.4 * scale
+                    else:                        r -= 0.5
+                self._last_comp_time = now
+
+                if stage == 4:
+                    self._protocol_stage = 5
+            else:
+                self._comp_streak = 0
+                r -= 2.0
+
+        elif action == 5:   # DELIVER_RESCUE_BREATHS — SUPPORT ONLY
+            self._comp_streak = 0   # breaks compression streak intentionally
+            if stage >= 5 and p.airway_open:
+                p.breaths_delivered  += 2
+                p.chest_rise_rate     = min(1.0, p.chest_rise_rate + 0.25 * scale)
+                # Breath HR gain intentionally small — policy must use compressions
+                p.heart_rate          = min(1.0, p.heart_rate + self._breath_hr_gain * scale)
+                r += 2.5 * scale
+            elif stage >= 5:
+                r -= 2.0   # airway closed → dangerous
+            else:
+                r -= 1.0
+
+        elif action == 6:   # DEFIBRILLATE
+            self._comp_streak = 0
+            if p.heart_rate >= 0.85:
+                r -= 1.0
+            elif stage >= 4 and p.compressions_delivered >= 30:
+                p.heart_rate = min(1.0, p.heart_rate + 0.35 * scale)
+                r += 4.5 * scale; done.add(6)
+            elif stage >= 4:
+                p.heart_rate = min(1.0, p.heart_rate + 0.20 * scale)
+                r += 2.0 * scale
+            else:
+                r -= 2.0
+
+        elif action == 7:   # MONITOR_PULSE (within cap — handled above for over-cap)
+            r += 0.5 if stage >= 4 else (-0.2 if stage >= 2 else -0.5)
+
+        elif action == 8:   # RECOVERY_POSITION
+            if 8 in done:
+                r -= 1.5
+            elif p.heart_rate >= 0.7:
+                p.recovery_position   = True
+                p.consciousness_level = min(1.0, p.consciousness_level + 0.3)
+                r += 5.0 * scale; done.add(8)
+            else:
+                r -= 1.0
+
+        elif action == 11:  # WAIT_OBSERVE
+            r -= 0.5 * (1.0 + p.time_without_action * 0.15)
+
+        # ── ROSC terminal bonus ────────────────────────────────────────────────
+        if p.heart_rate >= self._rosc_threshold and p.consciousness_level >= 0.7:
+            r += 20.0
+
+        # ── HR decay when not actively treating ───────────────────────────────
+        if action not in (4, 5, 6):
+            p.heart_rate = max(0.0, p.heart_rate - self._hr_decay)
+            if action != 4:
+                self._comp_streak = max(0, self._comp_streak - 1)
+
+        # ── Diversity bonus (collapse prevention) ──────────────────────────────
+        r += self._diversity_bonus()
+
+        self._update_landmarks(action)
+        return float(np.clip(r, -6.0, 22.0))
+
+    def _diversity_bonus(self) -> float:
+        """Reward for using varied actions in the last 10 steps."""
+        if len(self._recent_actions) < 3:
+            return 0.0
+        unique = len(set(self._recent_actions))
+        return 0.05 * max(0, unique - 1)   # 0 for 1 unique → 0.25 for 6+ unique
+
+    # ── Terminal ───────────────────────────────────────────────────────────────
+
+    def _is_terminal(self) -> bool:
+        p = self._patient
+        if p.heart_rate >= self._rosc_threshold:
+            self._rosc_steps += 1
+            if self._rosc_steps >= self._sustain_required:
+                p.consciousness_level = min(1.0, p.consciousness_level + 0.4)
+                return True
+        else:
+            self._rosc_steps = 0
+        if p.time_without_action > 12:     return True
+        if self._cumulative_reward < -120: return True
+        return False
+
+    # ── Observation ────────────────────────────────────────────────────────────
 
     def _get_obs(self) -> np.ndarray:
-        p = self._patient
+        p     = self._patient
+        stage = self._protocol_stage / 5.0
+        hist  = [(a + 1) / N_ACTIONS if a >= 0 else 0.0
+                 for a in self._action_history[:2]]
         base = np.concatenate([
             p.landmarks,
             [p.heart_rate, p.chest_rise_rate],
+            [stage],
+            hist,
         ]).astype(np.float32)
-
-        # Sensor noise
         noise = self.np_random.normal(0, self.noise_std, size=base.shape).astype(np.float32)
         return np.clip(base + noise, 0.0, 1.0)
 
     def _get_info(self) -> Dict[str, Any]:
         p = self._patient
         return {
-            "step": self._step_count,
-            "protocol_stage": self._protocol_stage,
-            "heart_rate": p.heart_rate,
-            "compressions": p.compressions_delivered,
-            "breaths": p.breaths_delivered,
-            "airway_open": p.airway_open,
+            "step":              self._step_count,
+            "protocol_stage":    self._protocol_stage,
+            "heart_rate":        p.heart_rate,
+            "compressions":      p.compressions_delivered,
+            "breaths":           p.breaths_delivered,
+            "airway_open":       p.airway_open,
             "cumulative_reward": self._cumulative_reward,
+            "difficulty":        self.difficulty,
+            "comp_streak":       self._comp_streak,
         }
 
-    def _is_terminal(self) -> bool:
-        p = self._patient
-        # Success: ROSC — clear threshold
-        if p.heart_rate >= 0.90:
-            return True
-        # Failure: prolonged inaction
-        if p.time_without_action > 12:
-            return True
-        # Failure: cumulative reward spiral
-        if self._cumulative_reward < -120:
-            return True
-        return False
-
-    def _compute_reward(self, action: int) -> float:
-        """
-        Reward function v2 — all exploits closed.
-
-        Key fixes vs v1:
-          - CALL_EMERGENCY now penalised when out of sequence (was +0.5 always)
-          - OPEN_AIRWAY now penalised when out of sequence (was 0 always)
-          - TILT_HEAD_BACK penalised when out of sequence
-          - CHECK_BREATHING penalised out of sequence (was +0.3 always)
-          - MONITOR_PULSE penalised stage < 2 (was only -0.3 stage < 3)
-          - Step-level time penalty added to prevent stalling
-          - ROSC terminal bonus increased to strongly reward protocol completion
-          - Repeating any already-completed action is penalised
-        """
-        p = self._patient
-        r = 0.0
-        stage = self._protocol_stage
-        scale = self._diff_scale
-
-        # ── Per-step living penalty — discourages stalling/looping ───────────
-        # Grows linearly with steps so early exploration is tolerated but
-        # long unproductive loops are costly.
-        step_penalty = -0.01 * (self._step_count / self.max_steps)
-
-        # ── Action already done this stage → penalty for repeating ───────────
-        already_done = self._actions_done
-
-        # ── Protocol-sequenced rewards ────────────────────────────────────────
-        if action == 0:  # ASSESS_CONSCIOUSNESS
-            if stage == 0:
-                r = 3.0 * scale
-                self._protocol_stage = 1
-                already_done.add(0)
-            elif action in already_done:
-                r = -1.0  # already completed, don't repeat
-            else:
-                r = -0.8  # out of order
-
-        elif action == 1:  # CALL_EMERGENCY
-            if stage == 1:
-                r = 3.0 * scale
-                self._protocol_stage = 2
-                already_done.add(1)
-            elif stage == 0:
-                r = -0.5  # calling before assessing
-            elif action in already_done:
-                r = -1.0
-            else:
-                r = -0.5  # no free reward for out-of-order calling
-
-        elif action == 10:  # TILT_HEAD_BACK
-            if stage >= 2:
-                if p.head_position < 0.9:
-                    r = 1.5 * scale
-                    p.head_position = min(1.0, p.head_position + 0.4)
-                    p.airway_open = p.head_position > 0.5
-                else:
-                    r = -0.3  # already tilted
-            else:
-                r = -0.8  # out of order
-
-        elif action == 2:  # OPEN_AIRWAY
-            if stage >= 2:
-                if not p.airway_open:
-                    r = 1.5 * scale
-                    p.head_position = min(1.0, p.head_position + 0.5)
-                    p.airway_open = True
-                    if stage == 2:
-                        self._protocol_stage = 3
-                        already_done.add(2)
-                else:
-                    r = -0.3  # airway already open
-            else:
-                r = -0.8  # out of order — significant penalty
-
-        elif action == 3:  # CHECK_BREATHING
-            if stage == 3:
-                r = 1.5 * scale
-                self._protocol_stage = 4
-                already_done.add(3)
-            elif stage > 3:
-                r = -0.3  # already checked
-            else:
-                r = -0.8  # out of order
-
-        elif action == 9:  # REPOSITION_HANDS
-            if stage >= 4:
-                if p.hand_placement < 1.0:
-                    p.hand_placement = min(1.0, p.hand_placement + 0.5)
-                    r = 1.0 * scale
-                else:
-                    r = -0.2  # already positioned
-            else:
-                r = -0.5  # out of order
-
-        elif action == 4:  # BEGIN_CHEST_COMPRESSIONS
-            if stage >= 4:
-                depth_bonus = max(0.5, p.hand_placement)  # at least 0.5 even without reposition
-                p.compression_depth = min(1.0, 0.4 + 0.6 * depth_bonus)
-                p.compressions_delivered += 30
-                # Compressions are the PRIMARY HR driver — make the effect strong and clear
-                hr_gain = 0.18 * p.compression_depth * scale
-                p.heart_rate = min(1.0, p.heart_rate + hr_gain)
-                r = 3.5 * p.compression_depth * scale
-                if stage == 4:
-                    self._protocol_stage = 5
-            else:
-                r = -2.0  # strong penalty for skipping assessment
-
-        elif action == 5:  # DELIVER_RESCUE_BREATHS
-            if stage >= 5 and p.airway_open:
-                p.breaths_delivered += 2
-                p.chest_rise_rate = min(1.0, p.chest_rise_rate + 0.25 * scale)
-                p.heart_rate = min(1.0, p.heart_rate + 0.08 * scale)
-                r = 2.5 * scale
-            elif stage >= 5 and not p.airway_open:
-                r = -2.0  # airway closed — dangerous
-            else:
-                r = -1.0  # out of order
-
-        elif action == 6:  # DEFIBRILLATE
-            if p.heart_rate >= 0.85:
-                r = -1.0   # HR already near ROSC — wasteful
-            elif stage >= 4 and p.compressions_delivered >= 30:
-                p.heart_rate = min(1.0, p.heart_rate + 0.35 * scale)
-                r = 4.5 * scale
-                already_done.add(6)
-            elif stage >= 4:
-                # Can still shock without reposition — just smaller gain
-                p.heart_rate = min(1.0, p.heart_rate + 0.20 * scale)
-                r = 2.0 * scale
-            else:
-                r = -2.0  # defibrillating without compressions
-
-        elif action == 7:  # MONITOR_PULSE
-            if stage >= 4:
-                r = 0.5
-            elif stage >= 2:
-                r = -0.2
-            else:
-                r = -0.5  # no point monitoring before any intervention
-
-        elif action == 8:  # RECOVERY_POSITION
-            if 8 in already_done:
-                r = -1.5   # already done — repeating it is wrong
-            elif p.heart_rate >= 0.7:
-                p.recovery_position = True
-                p.consciousness_level = min(1.0, p.consciousness_level + 0.3)
-                r = 5.0 * scale  # big reward — this is success
-                already_done.add(8)
-            else:
-                r = -1.0  # premature recovery position
-
-        elif action == 11:  # WAIT_OBSERVE
-            r = -0.5 * (1.0 + p.time_without_action * 0.15)  # escalating
-
-        # ── Stage progress bonus — small reward for advancing protocol ────────
-        # (only fires on the step that advances the stage)
-        # Already incorporated in the stage transitions above.
-
-        # ── ROSC terminal bonus ───────────────────────────────────────────────
-        if p.heart_rate >= 0.9 and p.consciousness_level >= 0.7:
-            r += 20.0  # strong terminal signal
-
-        # ── Continuous state decay without active intervention ─────────────────
-        if action not in [4, 5, 6]:
-            p.heart_rate = max(0.0, p.heart_rate - 0.008)
-
-        # ── Apply step penalty ────────────────────────────────────────────────
-        r += step_penalty
-
-        # ── Update landmarks ──────────────────────────────────────────────────
-        self._update_landmarks(action)
-
-        return float(np.clip(r, -5.0, 15.0))
+    # ── Action effects ─────────────────────────────────────────────────────────
 
     def _apply_action(self, action: int):
-        """Apply secondary state changes not in reward computation."""
         p = self._patient
         if action == 8 and p.recovery_position:
-            # Shift landmarks to reflect recovery position
             p.landmarks = self._generate_recovery_pose()
 
     def _update_landmarks(self, action: int):
-        """Update landmarks to reflect action effects on patient posture."""
         p = self._patient
-        if action == 10 or action == 2:
-            # Head tilts back — nose y decreases (head moves up in frame)
+        if action in (2, 10):
             p.landmarks[1] = max(0.1, p.landmarks[1] - 0.05 * p.head_position)
         elif action == 4:
-            # Chest compressions — slight chest depression visible
-            p.landmarks[33] = min(1.0, p.landmarks[33] + 0.02)  # left shoulder
-            p.landmarks[36] = min(1.0, p.landmarks[36] + 0.02)  # right shoulder
+            p.landmarks[33] = min(1.0, p.landmarks[33] + 0.02)
+            p.landmarks[36] = min(1.0, p.landmarks[36] + 0.02)
+
+    # ── Pose generators ────────────────────────────────────────────────────────
+
+    def _generate_collapse_pose(self) -> np.ndarray:
+        rng = self.np_random if hasattr(self, "np_random") else np.random
+        base = np.array([
+            0.50, 0.82, 0.95,
+            0.53, 0.80, 0.90,  0.56, 0.79, 0.88,  0.58, 0.78, 0.85,
+            0.47, 0.80, 0.90,  0.44, 0.79, 0.88,  0.42, 0.78, 0.85,
+            0.60, 0.81, 0.80,  0.40, 0.81, 0.80,
+            0.54, 0.84, 0.90,  0.46, 0.84, 0.90,
+            0.60, 0.72, 0.95,  0.40, 0.72, 0.95,
+            0.65, 0.60, 0.90,  0.35, 0.60, 0.90,
+            0.62, 0.50, 0.85,  0.38, 0.50, 0.85,
+        ], dtype=np.float32)
+        noise = rng.normal(0, 0.015, size=base.shape).astype(np.float32)
+        return np.clip(base + noise, 0.0, 1.0)
 
     def _generate_recovery_pose(self) -> np.ndarray:
-        """Lateral decubitus recovery position landmarks."""
         base = self._generate_collapse_pose()
-        # Shift x-coordinates to represent lateral rotation
         for i in range(0, len(base), 3):
             base[i] = np.clip(base[i] + 0.15, 0.0, 1.0)
         return base

@@ -11,81 +11,76 @@ Three algorithms (DQN, REINFORCE, PPO) are trained in a custom Gymnasium environ
 </p>
 
 ---
+# Features
 
-## Project Structure
+| Component | Details |
+|-----------|---------|
+| **Environment** | Gymnasium, 12 CPR actions, 56-dim obs (landmarks + vitals + temporal) |
+| **Algorithms** | DQN (SB3), PPO (SB3), vanilla REINFORCE (PyTorch) |
+| **Compression rate** | Real-time bpm reward signal (100–120 target) |
+| **Curriculum** | `env.set_difficulty('easy' / 'medium' / 'hard')` |
+| **Rendering** | Pygame: scrolling ECG, ROSC particles, compression depth meter |
+| **Unity 3D** | WebSocket bridge, animated humanoids, particle burst on ROSC |
+| **Resume-safe** | Training auto-resumes from last completed experiment |
+
+# Project Structure
 
 ```
 NoviceRL/
 ├── environment/
-│   ├──__init__.py
-│   └── custom_env.py   
-|   ├── mediapipe_exctractor.py
-│   └── rendering.py
-│   ├── unity_bridge.py        # Custom Gymnasium environment (53-dim obs, 12 discrete actions)
-│   └── rendering.py
-|                              # unity_bridge.py handles communication with Unity for visualization
+│   ├── custom_env.py          # Gymnasium environment (v3)
+│   ├── rendering.py           # Pygame dashboard (v4)
+│   ├── mediapipe_extractor.py # Landmark extraction (video / webcam / synthetic)
+│   └── unity_bridge.py        # WebSocket broadcast server
+│
 ├── training/
-│   ├── dqn_training.py
-│   └── pg_training.py
-├── models/
-│   ├── dqn/                 # Saved DQN models
-│   └── pg/                  # REINFORCE & PPO models
-├── results/                 # JSON result files per algorithm
-├── logs/                    # TensorBoard logs
-├── main.py                  # Entry point — runs best model with GUI + terminal
+│   ├── dqn_training.py        # DQN — 10 hyperparameter experiments
+│   └── pg_training.py         # PPO + REINFORCE — 10 experiments each
+│
+├── unity/
+│   ├── BridgeClient.cs        # WebSocket client + event dispatcher
+│   ├── CPR_HUD.cs             # Canvas UI overlay
+│   ├── CPRSceneEnvironment.cs # Procedural room + particle system (v3)
+│   ├── CPRSceneManager.cs     # Scene + camera orchestration
+│   ├── HumanoidBuilder.cs     # Shared avatar factory
+│   ├── HumanoidPatient.cs     # Patient animations
+│   └── HumanoidRescuer.cs     # Rescuer IK + fatigue system (v6)
+│
+├── models/                    # Saved model checkpoints
+├── results/                   # JSON experiment logs
+├── logs/                      # TensorBoard logs
+│
+├── main.py                    # Entry point
 ├── requirements.txt
 └── README.md
 ```
 
 ---
 
-## Setup
+# Setup
 
-### Prerequisites
+## Prerequisites
 - Python 3.10 or 3.11
 - macOS / Linux / Windows
 
-```bash
-# Clone the repository
-git clone <your-repo-url>
-cd cpr_rl_project
+### 1 Clone & install
 
-# Create virtual environment
+```bash
+git clone https://github.com/Gatwaza/Jean_Robert_Gatwaza_rl_summative.git
+cd NoviceRL
 python -m venv venv
 source venv/bin/activate       # macOS / Linux
 # venv\Scripts\activate        # Windows
-
-# Install dependencies
 pip install -r requirements.txt
 ```
+##### 2 Standalone Pygame demo without Unity bridge
 
----
-
-## Usage
-
-### 1. Random Agent Demo (no training required)
-Demonstrates the environment and Pygame GUI without any trained model:
 ```bash
-python main.py --random --episodes 3
-```
+# Random agent see the environment
+python main.py --random --no-bridge
 
-### 2. Train All Algorithms
-```bash
-# DQN (10 experiments, ~30–60 min)
-python training/dqn_training.py
-
-# REINFORCE + PPO (10 experiments each, ~60–120 min)
-python training/pg_training.py --algo all
-
-# Or individually:
-python training/pg_training.py --algo reinforce
-python training/pg_training.py --algo ppo
-```
-
-Training is **resume-safe** — if interrupted, re-run the same command and it will continue from the last completed experiment.
-
-### 3. Run Best Trained Agent
-```bash
+# Demo best trained model
+python main.py --demo --no-bridge
 # Auto-detect best algorithm
 python main.py
 
@@ -99,18 +94,44 @@ python main.py --no-render
 
 # Multiple episodes
 python main.py --episodes 5
-```
 
-### 4. TensorBoard
+# Use MediaPipe on a video file
+python main.py --demo --no-bridge --video data/upload_cpr_like_video_to_this_folder.mp4 --mediapipe
+```
+###### 3 Train all algorithms
+
 ```bash
-tensorboard --logdir logs/
+# Train DQN (10 experiments × 750k steps ≈ 40 mins on GPU laptop & 2–4 hours on CPU)
+python training/dqn_training.py
+
+# Train PPO + REINFORCE
+python training/pg_training.py --algo all
+
+# Or train a specific algorithm
+python training/pg_training.py --algo ppo
 ```
 
+###### 4 Unity 3D visualization
+
+1. Open the NoviceUnityRL in `unity/` (Unity 6.0+ recommended)
+2. Install **NativeWebSocket** via Package Manager:
+   ```
+   https://github.com/endel/NativeWebSocket.git#upm
+   ```
+3. Press **Play** in Unity find the button at middle of top of unity editor. 
+4. In a separate terminal:
+   ```bash
+   python main.py --demo
+   # or
+   python main.py --random
+   ```
+
+The Python bridge auto-connects on `ws://localhost:8765`.
 ---
 
-## Environment Design
+# Environment Design
 
-### Observation Space
+## Observation Space
 - **Dimension:** 53 continuous values ∈ [0, 1]
 - **Components:** 17 MediaPipe pose keypoints × 3 (x, y, visibility) + heart rate proxy + chest rise rate
 - **Noise:** Gaussian jitter (σ=0.02) simulates real-world MediaPipe detection variance
@@ -131,50 +152,31 @@ tensorboard --logdir logs/
 | 10 | TILT_HEAD_BACK | Extend neck to open airway |
 | 11 | WAIT_OBSERVE | Passive — penalized if prolonged |
 
-### Reward Structure
-- **Sequential protocol compliance:** +2.0 per correct stage progression
-- **Chest compressions with good hand placement:** up to +3.0
-- **ROSC (Return of Spontaneous Circulation):** +10.0 terminal bonus
-- **Skipped steps / wrong order:** −1.0
-- **Rescue breaths with closed airway:** −1.5
-- **Prolonged inaction:** −0.5 × (1 + t×0.1) escalating
+#### Reward Function Summary
 
-### Terminal Conditions
+| Action | Condition | Reward |
+|--------|-----------|--------|
+| ASSESS_CONSCIOUSNESS | Stage 0 | +3.0 × scale |
+| CALL_EMERGENCY | Stage 1 | +3.0 × scale |
+| OPEN_AIRWAY | Stage ≥ 2, airway closed | +1.5 × scale |
+| CHECK_BREATHING | Stage 3 | +1.5 × scale |
+| BEGIN_COMPRESSIONS | Stage ≥ 4 | +3.5 × depth × scale |
+| → at 100–120 bpm | Rate bonus | +1.0 × scale |
+| RESCUE_BREATHS | Stage ≥ 5, airway open | +2.5 × scale |
+| DEFIBRILLATE | ≥ 30 compressions first | +4.5 × scale |
+| RECOVERY_POSITION | HR ≥ 0.7 | +5.0 × scale |
+| ROSC terminal | HR ≥ 0.9 sustained | +20.0 |
+| Any action out of order | — | −0.5 to −2.0 |
+
+Difficulty scales: `easy` = 1.6×, `medium` = 1.0×, `hard` = 0.65×
+
+# Terminal Conditions
 - **Success:** heart_rate ≥ 0.9 AND consciousness_level ≥ 0.7 (ROSC achieved)
 - **Failure:** inaction > 15 consecutive steps
 - **Truncation:** max_steps reached (default 200)
 
----
+# License
 
-## MediaPipe Integration
+GNU General Public License v3.0 — see [LICENSE](LICENSE).
 
-For production use, replace `_generate_collapse_pose()` in `custom_env.py` with live or video-extracted MediaPipe landmarks:
-
-```python
-import mediapipe as mp
-import cv2
-
-mp_pose = mp.solutions.pose
-pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5)
-
-cap = cv2.VideoCapture("cpr_video.mp4")
-ret, frame = cap.read()
-results = pose.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-
-if results.pose_landmarks:
-    landmarks = np.array([
-        [lm.x, lm.y, lm.visibility]
-        for lm in results.pose_landmarks.landmark[:17]
-    ]).flatten()
-```
-
----
-
-## Results
-
-After training, results are stored in `results/`:
-- `dqn_results.json`
-- `ppo_results.json`
-- `reinforce_results.json`
-
-Each file contains per-experiment metrics: mean reward, max reward, hyperparameters, and reward curves for plotting.
+> **Medical Disclaimer:** This tool is a training and simulation aid only. It does not replace formal CPR certification or professional medical advice. Always call emergency services first.
