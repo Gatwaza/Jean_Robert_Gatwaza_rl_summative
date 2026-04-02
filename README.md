@@ -61,12 +61,13 @@ NoviceRL/
 │   └── HumanoidRescuer.cs     # Rescuer IK + fatigue system
 │
 ├── models/                    # Saved model checkpoints
-├── results/                   # JSON experiment logs
+├── results/                  # JSON experiment logs
 │   ├── dqn_results.json
 │   ├── ppo_results.json
 │   ├── reinforce_results.json
 │   ├── training_summary.json
 │   └── plot_data.json
+|   └── graphs/                # collective graphs for the project
 ├── logs/                      # TensorBoard logs
 │
 ├── main.py                    # Entry point
