@@ -1,32 +1,5 @@
 """
-CPR Position Assessment Environment  (v4 — Exploit-Proof Edition)
-==================================================================
-
-Root-cause fixes from live run (April 2026 terminal output):
-
-  EXPLOIT 1 — MONITOR_PULSE farmed at +0.5/step for 100-150 steps (64-72%)
-    Fix: consecutive_cap = 3. After 3 in a row: escalating penalty & early
-         return (no base reward). Stops the exploit cold.
-
-  EXPLOIT 2 — Rescue breaths used as primary HR driver
-    Fix: breath_hr_gain  0.08 → 0.03  (support role only)
-         comp_hr_gain    0.18 → 0.22  (compressions are the engine)
-         Compression streak multiplier: consecutive compressions give up to
-         1.5× HR gain, simulating the clinical 30:2 cycle rhythm bonus.
-
-  EXPLOIT 3 — HR plateaus at 0.80-0.87, ROSC never reached
-    Fix: With corrected gains above, a clean sequence now reliably reaches
-         HR ≥ 0.90. ROSC sustain_required=2 (medium) unchanged.
-
-  EXPLOIT 4 — Action collapse (single action > 60% of episode)
-    Fix: _diversity_bonus() adds +0.05 per unique action in the last 10
-         steps beyond 1 (max +0.25 at 6 unique), making diversity valuable.
-
-New in v4 (beyond v3):
-  • consecutive_cap dict with per-action tuning
-  • compression streak multiplier (streak bonus up to ×1.5)
-  • diversity bonus (deque of last 10 actions)
-  • breath_hr_gain explicitly parametrised (difficulty-aware)
+CPR Position Assessment Environment
 """
 
 import gymnasium as gym
@@ -36,9 +9,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional, Tuple, Dict, Any, List, Deque
 
-# ---------------------------------------------------------------------------
 # Patient State
-# ---------------------------------------------------------------------------
+
 @dataclass
 class PatientState:
     landmarks:            np.ndarray = field(default_factory=lambda: np.zeros(51))
@@ -74,9 +46,8 @@ N_ACTIONS = len(ACTION_NAMES)
 OBS_DIM   = 56   # 51 landmarks + 2 vitals + 1 stage norm + 2 temporal
 
 
-# ---------------------------------------------------------------------------
 # Environment
-# ---------------------------------------------------------------------------
+
 class CPREnv(gym.Env):
     """
     Gymnasium CPR environment — exploit-proof reward shaping.
@@ -123,7 +94,7 @@ class CPREnv(gym.Env):
         self._renderer = None
         self._episode  = 0
 
-    # ── Difficulty ─────────────────────────────────────────────────────────────
+    # Difficulty
 
     def set_difficulty(self, difficulty: str):
         """Hot-swap difficulty without resetting. Use for curriculum schedules."""
@@ -157,7 +128,7 @@ class CPREnv(gym.Env):
             self._comp_hr_gain     = 0.22   # ↑ from 0.18 — primary driver
             self._breath_hr_gain   = 0.03   # ↓ from 0.08 — support role
 
-    # ── Episode-level state ────────────────────────────────────────────────────
+    # Episode-level state
 
     def _reset_state(self):
         self._step_count        = 0
@@ -174,7 +145,7 @@ class CPREnv(gym.Env):
         self._comp_streak       = 0
         self._rosc_steps        = 0
 
-    # ── Gymnasium API ──────────────────────────────────────────────────────────
+    # Gymnasium API
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
@@ -228,7 +199,7 @@ class CPREnv(gym.Env):
             self._renderer.close()
             self._renderer = None
 
-    # ── Reward v4 ──────────────────────────────────────────────────────────────
+    # Reward v4
 
     def _compute_reward(self, action: int) -> float:
         p, stage, scale, done = (
@@ -247,14 +218,13 @@ class CPREnv(gym.Env):
                 return float(np.clip(r, -6.0, 22.0))
             r += penalty
 
-        # ── Repeat penalty ────────────────────────────────────────────────────
+        # Repeat penalty
         self._repeat_counts[action] = self._repeat_counts.get(action, 0) + 1
         n_reps = self._repeat_counts[action]
         if action in done and n_reps > 1:
             r -= 0.35 * min(n_reps - 1, 5)
 
-        # ── Protocol rewards ───────────────────────────────────────────────────
-
+        # Protocol rewards
         if action == 0:   # ASSESS_CONSCIOUSNESS
             if stage == 0:
                 r += 3.0 * scale; self._protocol_stage = 1; done.add(0)
@@ -389,13 +359,13 @@ class CPREnv(gym.Env):
         elif action == 11:  # WAIT_OBSERVE
             r -= 0.5 * (1.0 + p.time_without_action * 0.15)
 
-        # ── ROSC terminal bonus ────────────────────────────────────────────────
+        # ROSC terminal bonus
         # Reduced from 20.0 → 8.0 and clip tightened to [-3, 10] to keep the
         # Q-value range compact and prevent DQN overestimation of rare bonuses.
         if p.heart_rate >= self._rosc_threshold and p.consciousness_level >= 0.7:
             r += 8.0
 
-        # ── HR decay when not actively treating ───────────────────────────────
+        # HR decay when not actively treating
         if action not in (4, 5, 6):
             p.heart_rate = max(0.0, p.heart_rate - self._hr_decay)
             if action != 4:
@@ -414,7 +384,7 @@ class CPREnv(gym.Env):
         unique = len(set(self._recent_actions))
         return 0.05 * max(0, unique - 1)   # 0 for 1 unique → 0.25 for 6+ unique
 
-    # ── Terminal ───────────────────────────────────────────────────────────────
+    # Terminal
 
     def _is_terminal(self) -> bool:
         p = self._patient
@@ -429,7 +399,7 @@ class CPREnv(gym.Env):
         if self._cumulative_reward < -120: return True
         return False
 
-    # ── Observation ────────────────────────────────────────────────────────────
+    # Observation
 
     def _get_obs(self) -> np.ndarray:
         p     = self._patient
@@ -459,7 +429,7 @@ class CPREnv(gym.Env):
             "comp_streak":       self._comp_streak,
         }
 
-    # ── Action effects ─────────────────────────────────────────────────────────
+    # Action effects
 
     def _apply_action(self, action: int):
         p = self._patient
@@ -474,7 +444,7 @@ class CPREnv(gym.Env):
             p.landmarks[33] = min(1.0, p.landmarks[33] + 0.02)
             p.landmarks[36] = min(1.0, p.landmarks[36] + 0.02)
 
-    # ── Pose generators ────────────────────────────────────────────────────────
+    # Pose generators
 
     def _generate_collapse_pose(self) -> np.ndarray:
         rng = self.np_random if hasattr(self, "np_random") else np.random
